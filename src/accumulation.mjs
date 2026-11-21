@@ -144,7 +144,9 @@ function audit(candles,rows,h,scoreNow) {
     matched:bins[bucket(scoreNow)],baseline:sampleStats(sample,0,100),bins};
 }
 
-export function buildAccumulation(data,ticker,options={}) {
+// The same close-by-close factor observations drive staged and single-entry
+// strategies. None of the observations contains a subsequent price or return.
+export function buildFactorTape(data,ticker,options={}) {
   const assets=data?.assets??data;
   const ref=Object.hasOwn(referenceFor,ticker) ? referenceFor[ticker] : options.referenceTicker;
   const candles=assets?.[ticker]?.candles,refCandles=assets?.[ref]?.candles,spyCandles=assets?.SPY?.candles;
@@ -164,6 +166,18 @@ export function buildAccumulation(data,ticker,options={}) {
     return scores;
   });
   if(!latest) return null;
+  const {row,sector,spy,refs}=latest;
+  const inputs={drawdownPct:round(-row.drawdown),drawdownRank:round(refs.dd.rank),drawdownP90:round(refs.dd.p90),
+    dist200Pct:round(-row.discount),discountRank:round(refs.gap.rank),discountP90:round(refs.gap.p90),
+    referenceSlopePct:round(sector.longSlope),spySlopePct:round(spy.longSlope),referenceBouncePct:round(sector.rebound),
+    volatility63Pct:round(row.volatility),volatilityRank:round(refs.vol.rank),leverage:ticker==='SOXL'?3:1};
+  return {ticker,ref,candles,latest,factors,inputs,asOf:candles.at(-1)[0]};
+}
+
+export function buildAccumulation(data,ticker,options={}) {
+  const tape=options.factorTape??buildFactorTape(data,ticker,options);
+  if(!tape || tape.ticker!==ticker)return null;
+  const {ref,candles,factors,latest,inputs}=tape;
   const {row,sector,spy,refs,scores}=latest;
   const reasons=[
     '252일 최고 종가 대비 −'+fmt(row.drawdown)+'%. 과거 '+refs.dd.n+'개 낙폭 중 '+fmt(refs.dd.rank)+'백분위이며 90백분위 낙폭은 '+fmt(refs.dd.p90)+'%입니다.',
@@ -171,12 +185,7 @@ export function buildAccumulation(data,ticker,options={}) {
     ref+' 200일선의 반년 변화 '+signedPct(sector.longSlope)+', SPY '+signedPct(spy.longSlope)+'. '+ref+'는 최근 63일 최저 종가 대비 '+signedPct(sector.rebound)+'입니다.',
     '63일 연율 변동성 '+fmt(row.volatility)+'%, 과거 '+refs.vol.n+'개 관측 중 '+fmt(refs.vol.rank)+'백분위. '+(ticker==='SOXL'?'일일 3배 재조정 위험을 구조 항목에 반영합니다.':'일일 3배 재조정에 따른 구조 감점이 없습니다.')
   ];
-  const result={version:ACCUMULATION_VERSION,asOf:candles.at(-1)[0],reference:ref,
-    inputs:{drawdownPct:round(-row.drawdown),drawdownRank:round(refs.dd.rank),drawdownP90:round(refs.dd.p90),
-      dist200Pct:round(-row.discount),discountRank:round(refs.gap.rank),discountP90:round(refs.gap.p90),
-      referenceSlopePct:round(sector.longSlope),spySlopePct:round(spy.longSlope),referenceBouncePct:round(sector.rebound),
-      volatility63Pct:round(row.volatility),volatilityRank:round(refs.vol.rank),leverage:ticker==='SOXL'?3:1},
-    horizons:{}};
+  const result={version:ACCUMULATION_VERSION,asOf:candles.at(-1)[0],reference:ref,inputs,horizons:{}};
   for(const [period,weights] of Object.entries(ACCUMULATION_WEIGHTS)) {
     const daily=factors.map(scoresAtClose=>scoresAtClose?contribution(scoresAtClose,weights).score:null);
     const now=contribution(scores,weights),prior=daily.at(-2),history=[];

@@ -11,11 +11,13 @@ import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
 import {setTimeout as pause} from 'node:timers/promises';
 import {assessListing} from '../src/explorer-model.mjs';
-import {buildAccumulation,ACCUMULATION_VERSION,ACCUMULATION_WEIGHTS} from '../src/accumulation.mjs';
+import {buildAccumulation,buildFactorTape,ACCUMULATION_VERSION,ACCUMULATION_WEIGHTS} from '../src/accumulation.mjs';
+import {BOTTOM_TIMING_VERSION,BOTTOM_TIMING_WEIGHTS,latestBottomTiming} from '../src/bottom-timing.mjs';
 
 const {values:args}=parseArgs({options:{
   dolt:{type:'string'},cache:{type:'string'},db:{type:'string'},'data-dir':{type:'string'},
-  'as-of':{type:'string'},revision:{type:'string'},update:{type:'boolean',default:false}
+  'as-of':{type:'string'},revision:{type:'string'},update:{type:'boolean',default:false},
+  'export-private-bars':{type:'string'}
 }});
 if(args.revision!==undefined && !/^[0-9a-v]{32}$/.test(args.revision))
   throw Error('A pinned revision must be the full 32-character Dolt commit hash');
@@ -24,7 +26,7 @@ const dir=path.resolve(args['data-dir']??path.join(root,'public','data'));
 const cache=path.resolve(args.cache??path.join(root,'.rank-cache')),db=path.resolve(args.db??path.join(cache,'stockdb'));
 const binary=args.dolt && /[\\/]/.test(args.dolt)?path.resolve(args.dolt):(args.dolt??'dolt');
 const sourceRepo='post-no-preference/stocks';
-const buildVersion='rank-market-1.2';
+const buildVersion='rank-market-2.0';
 const reasonLabels={unsupported_structure:'모델 대상 외 증권 유형',no_source:'가격 자료 없음',not_current:'기준일 체결 자료 없음',
   short_history:'확정 거래일 504개 미만',invalid_history:'종가·OHLC 품질 확인 필요',uncertain_action:'분할 또는 가격 단절 확인 필요',
   halted:'장기 거래 공백 이후 이력 부족',benchmark_unavailable:'기준시장 이력 부족'};
@@ -113,7 +115,7 @@ function validBar(c) {
   return datePattern.test(date) && [o,h,l,x].every(v=>Number.isFinite(v)&&v>0) &&
     h>=Math.max(o,l,x) && l<=Math.min(o,x) && Number.isFinite(v) && v>=0;
 }
-function adjusted(symbol,raw) {
+function adjusted(symbol,raw,maxSessions=lookback) {
   if(!raw?.length)return {reason:'no_source'};
   if(raw.at(-1)[0]!==asOf || !(raw.at(-1)[5]>0))return {reason:'not_current'};
   const bars=[];
@@ -127,7 +129,7 @@ function adjusted(symbol,raw) {
     priorSession=session;bars.push(c);
   }
   if(bars.length<504)return {reason:cutForGap?'halted':'short_history'};
-  const subset=bars.slice(-lookback);
+  const subset=bars.slice(-maxSessions);
   if(!subset.every(validBar))return {reason:'invalid_history'};
   const adjustedBars=new Array(subset.length);
   const actions=splits.get(symbol)??[];
@@ -159,17 +161,53 @@ function evaluate(listing,raw,refs) {
   if(asset.reason)return {symbol,reason:asset.reason};
   const reference=assessListing(listing).reference;
   const set={...refs,[symbol]:asset};
-  const model=buildAccumulation(set,symbol,{referenceTicker:reference});
+  const tape=buildFactorTape(set,symbol,{referenceTicker:reference});
+  if(!tape)return {symbol,reason:'benchmark_unavailable'};
+  const model=buildAccumulation(set,symbol,{referenceTicker:reference,factorTape:tape});
   if(!model)return {symbol,reason:'benchmark_unavailable'};
   const {252:one,504:two}=model.horizons;
   return {symbol,providerSymbol:listing.providerSymbol??symbol,name:listing.name,exchange:listing.exchange,
     type:listing.type,reference,asOf,nBars:asset.candles.length,score252:one.score,score504:two.score,
-    factors:one.components.map(c=>c.score),inputs:model.inputs};
+    factors:one.components.map(c=>c.score),inputs:model.inputs,timing:latestBottomTiming(tape)};
 }
 function assignRank(rows,horizon) {
   const score='score'+horizon,rank='rank'+horizon;
   rows.sort((a,b)=>b[score]-a[score] || a.symbol.localeCompare(b.symbol,'en'));
   for(let i=0;i<rows.length;i++)rows[i][rank]=i && rows[i][score]===rows[i-1][score]?rows[i-1][rank]:i+1;
+}
+
+// Auditors can recreate the historical inputs for the fixed, currently ranked
+// cohort without exposing price tapes in the website or publishing workflow.
+async function exportPrivateBars(destination) {
+  const target=path.resolve(destination), inside=path.relative(root,target);
+  if(!inside.startsWith('..'+path.sep) && !path.isAbsolute(inside))throw Error('Private bar export must be outside the project.');
+  const baseline=JSON.parse(await readFile(path.join(dir,'long-ranks.json'),'utf8'));
+  if(baseline.asOf!==asOf || baseline.source.commit!==commit || baseline.coverage.scored!==baseline.rows.length)
+    throw Error('Public cohort does not match the pinned date and source revision.');
+  const cohort=new Map(baseline.rows.map(row=>[row.symbol,row.reference]));
+  for(const ticker of [...cohort.values(),'SPY'])if(!cohort.has(ticker))cohort.set(ticker,'SPY');
+  await mkdir(path.dirname(target),{recursive:true});
+  const temporary=target+'.tmp-'+process.pid,output=createWriteStream(temporary),digest=createHash('sha256');
+  let count=0,fallbacks=0,shortest=Infinity,longest=0;
+  for(let id=0;id<shardCount;id++) {
+    for(const [symbol,raw] of await loadShard(id,cohort)){
+      let asset=adjusted(symbol,raw,Number.MAX_SAFE_INTEGER);
+      if(asset.reason){asset=adjusted(symbol,raw);fallbacks++;}
+      if(asset.reason)throw Error('The retained cohort lost verified bars for '+symbol);
+      const line=JSON.stringify({symbol,reference:cohort.get(symbol),candles:asset.candles})+'\n';
+      digest.update(line);
+      if(!output.write(line))await once(output,'drain');
+      shortest=Math.min(shortest,asset.candles.length);longest=Math.max(longest,asset.candles.length);count++;
+    }
+  }
+  await new Promise((resolve,reject)=>{output.once('error',reject);output.end(resolve);});
+  if(count!==cohort.size)throw Error('Missing requested symbols in the private audit export');
+  await rename(temporary,target);
+  const meta={asOf,commit,source:'post-no-preference/stocks',actionThrough,scored:baseline.rows.length,
+    exported:count,minimumBars:shortest,maximumBars:longest,truncatedFallbacks:fallbacks,sha256:digest.digest('hex'),
+    basis:'Split-adjusted OHLCV. Zero-volume rows omitted. Gaps over 10 traded SPY sessions restart history; unclear split or >1.70x overnight dislocations fail quality checks. Invalid older history falls back to the last 1008 verified bars.'};
+  await atomic(target+'.meta.json',JSON.stringify(meta));
+  console.log('Private historical validation export complete.',JSON.stringify(meta));
 }
 
 await mkdir(cache,{recursive:true});
@@ -204,7 +242,7 @@ if(!catalog.items?.length || catalog.items.length!==catalog.count || new Set(cat
 const candidates=catalog.items.filter(l=>assessListing(l).reference),wanted=new Map(candidates.map(l=>[l.symbol,l]));
 const groups=Array.from({length:shardCount},()=>[]);
 for(const l of candidates)groups[shard(l.symbol)].push(l);
-const defs=await Promise.all(['../src/accumulation.mjs','../src/explorer-model.mjs','./rank-market.mjs'].map(rel=>readFile(new URL(rel,import.meta.url))));
+const defs=await Promise.all(['../src/accumulation.mjs','../src/bottom-timing.mjs','../src/explorer-model.mjs','./rank-market.mjs'].map(rel=>readFile(new URL(rel,import.meta.url))));
 const configHash=sha([catalog.asOf,JSON.stringify(candidates),...defs].join('\n')).slice(0,14);
 const job=path.join(cache,asOf+'-'+commit+'-'+configHash);
 await mkdir(job,{recursive:true});
@@ -225,6 +263,10 @@ for(const id of new Set([...refSymbols].map(shard)))for(const [k,v] of await loa
 const spy=rawRefs.get('SPY')??[];
 if(spy.length<504 || spy.at(-1)[0]!==asOf || !(spy.at(-1)[5]>0))throw Error('SPY trading calendar unavailable for cutoff');
 const calendar=new Map(spy.filter(c=>c[5]>0).map((c,i)=>[c[0],i]));
+if(args['export-private-bars']) {
+  await exportPrivateBars(args['export-private-bars']);
+  process.exit(0);
+}
 const refs={};
 for(const [key,bars] of rawRefs){const ref=adjusted(key,bars);if(!ref.reason)refs[key]=ref;}
 if(!refs.SPY)throw Error('Benchmark price integrity could not be verified');
@@ -251,7 +293,9 @@ const source={name:'DoltHub · post-no-preference/stocks',url:'https://www.dolth
   changeNotice:'Semiscope가 일별 OHLCV에 주식 분할을 반영하고 정해진 모형으로 장기 점수와 순위를 계산했습니다. 가공한 순위 데이터에도 CC BY-SA 4.0을 적용합니다.'};
 const output={schemaVersion:1,modelVersion:ACCUMULATION_VERSION,buildVersion,asOf,generatedAt:new Date().toISOString(),
   source,listingSource:catalog.source,weights:ACCUMULATION_WEIGHTS,minimumSessions:504,maximumSessions:lookback,
-  coverage:{listed:catalog.count,eligible:candidates.length,scored:rows.length,excluded},reasonLabels,excludedBySymbol,rows};
+  coverage:{listed:catalog.count,eligible:candidates.length,scored:rows.length,excluded},reasonLabels,excludedBySymbol,rows,
+  timingModelVersion:BOTTOM_TIMING_VERSION,timingWeights:BOTTOM_TIMING_WEIGHTS,
+  timingCoverage:{scored:rows.filter(row=>row.timing?.date===asOf).length,eligible:rows.length}};
 if(rows.length+Object.values(excluded).reduce((a,b)=>a+b,0)!==catalog.count || !rows.length)
   throw Error('Rank population reconciliation failed');
 await atomic(path.join(dir,'long-ranks.json'),JSON.stringify(output));

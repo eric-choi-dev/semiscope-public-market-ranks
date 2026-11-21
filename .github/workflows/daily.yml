@@ -9,6 +9,10 @@ on:
         description: Rebuild the current market day and verify its public release
         type: boolean
         default: false
+      migrate_timing_v2:
+        description: Publish the verified additive bottom-timing release against its pinned baseline
+        type: boolean
+        default: false
 
 concurrency:
   group: public-rank-publication
@@ -51,10 +55,13 @@ jobs:
         env:
           RANK_PUBLISH_TOKEN: ${{ secrets.RANK_PUBLISH_TOKEN }}
           VERIFY_CURRENT: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_current }}
+          MIGRATE_TIMING: ${{ github.event_name == 'workflow_dispatch' && inputs.migrate_timing_v2 }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$VERIFY_CURRENT" = "true" ]; then
+          if [ "$MIGRATE_TIMING" = "true" ]; then
+            node scripts/refresh-cloud-ranks.mjs --migrate-timing-v2
+          elif [ "$VERIFY_CURRENT" = "true" ]; then
             node scripts/refresh-cloud-ranks.mjs --verify-current
           else
             node scripts/refresh-cloud-ranks.mjs

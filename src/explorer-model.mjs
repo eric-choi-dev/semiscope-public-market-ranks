@@ -1,4 +1,4 @@
-import {buildAccumulation} from './accumulation.mjs';
+import {buildAccumulation,buildFactorTape} from './accumulation.mjs';
 
 const references={SOXL:'SOXX',MU:'SOXX',SOXX:'SOXX',QQQ:'QQQ',IXIC:'IXIC',GSPC:'SPY',SPY:'SPY'};
 // Index-tracking objectives checked against the issuers. Listing as an ETF alone
@@ -116,7 +116,7 @@ export function assessListing(listing) {
   return {reference:'SPY',known:false};
 }
 
-export function buildExplorerScore(asset,listing,dashboard) {
+export function buildExplorerScore(asset,listing,dashboard,buildSingle) {
   const rule=assessListing(listing);
   if(!rule.reference)return result('restricted',rule.reason);
   const ref=rule.reference;
@@ -137,9 +137,15 @@ export function buildExplorerScore(asset,listing,dashboard) {
   if(last<503)return result('insufficient','종목과 기준시장에 공통으로 확정된 가격 이력이 부족합니다.',ref);
   const asOf=asset.candles[last][0];
   if(last!==asset.candles.length-1)assets[ticker]={...asset,candles:asset.candles.slice(0,last+1)};
-  const model=buildAccumulation(assets,ticker,{referenceTicker:ref});
+  const options={referenceTicker:ref};
+  const factorTape=buildFactorTape(assets,ticker,options);
+  if(!factorTape)return result('insufficient','종목과 기준 시장의 공통 점수를 산출할 이력이 부족합니다.',ref);
+  options.factorTape=factorTape;
+  const model=buildAccumulation(assets,ticker,options);
   if(!model)return result('insufficient','해당 날짜의 기준시장 이동평균을 계산할 이력이 부족합니다.',ref);
   let reason=rule.known ? '기존 모델의 기준시장 '+ref+'를 사용합니다.' : '비교 기준은 미국 대형주 시장을 추적하는 SPY입니다.';
   if(asOf!==asset.asOf)reason+=' 두 시장의 공통 확정일은 '+asOf+'입니다.';
-  return result('supported',reason,ref,asOf,model);
+  const supported=result('supported',reason,ref,asOf,model);
+  if(buildSingle) supported.singleEntry=buildSingle(assets,ticker,options);
+  return supported;
 }
