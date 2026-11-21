@@ -1,0 +1,23 @@
+{
+  "state": "reproduced-and-published",
+  "checkedAt": "2026-11-21T06:33:22.615Z",
+  "asOf": "2026-11-20",
+  "version": "v2",
+  "sha256": "d85be32539af5342f11c4d682f2ab54aec767582995711fbd67a62d7d484e6f5",
+  "coverage": {
+    "listed": 13262,
+    "eligible": 5293,
+    "scored": 3469,
+    "excluded": {
+      "unsupported_structure": 7969,
+      "no_source": 11,
+      "not_current": 121,
+      "short_history": 879,
+      "invalid_history": 0,
+      "uncertain_action": 658,
+      "halted": 155,
+      "benchmark_unavailable": 0
+    }
+  },
+  "sourceCommit": "aef7n6a07m0r9tn7nrr0gfsjpstfdhr3"
+}
