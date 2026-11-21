@@ -21,6 +21,7 @@ assert(!values['review-timing-candidate'] || (!verifyCurrent && !migrateTiming),
 const timingRelease={
   baselineSiteVersion:2,
   baselineSha256:'d85be32539af5342f11c4d682f2ab54aec767582995711fbd67a62d7d484e6f5',
+  directorySha256:'b4200a0d6ea669e3238735ee3f4a495d6d7da648ed25fb5768a4882da9ebc868',
   asOf:'2026-11-20',sourceCommit:'aef7n6a07m0r9tn7nrr0gfsjpstfdhr3',
   previousBuild:'rank-market-1.2',nextBuild:'rank-market-2.0',timingModel:'bottom-timing-1.0',
   // SHA256 of the reviewed full snapshot with only its generatedAt omitted.
@@ -91,6 +92,45 @@ async function readPublished(m) {
     if (attempt<4) await pause(1000*(attempt+1));
   }
   throw new Error('CDN rank bytes do not match the published manifest');
+}
+
+async function stageDirectory(dataDir,previous) {
+  await mkdir(dataDir,{recursive:true});
+  const destination=path.join(dataDir,'us-listings.json');
+  if(migrateTiming){
+    // A historical model migration must use exactly the reference universe
+    // that produced the baseline, regardless of subsequent Nasdaq site updates.
+    const response=await get('https://semiscope.deed.page/data/us-listings.json?verify='+Date.now());
+    const bytes=Buffer.from(await response.arrayBuffer());
+    assert.equal(sha256(bytes),timingRelease.directorySha256,'The audited Nasdaq directory bytes have changed');
+    const data=JSON.parse(bytes);
+    assert.equal(data.asOf,timingRelease.asOf);
+    assert.equal(data.count,previous.coverage.listed);
+    await writeFile(destination,bytes);
+    return {data,held:false};
+  }
+  try {
+    const pull=()=>execute(process.execPath,[path.join(root,'scripts','prepare-rank-catalog.mjs'),dataDir]);
+    try { await pull(); }
+    catch { await pause(1200); await pull(); }
+    return {data:JSON.parse(await readFile(destination,'utf8')),held:false};
+  } catch {
+    // The deployed Nasdaq reader uses a second network location; it states
+    // whether it fetched the exchange directories or returned a stored snapshot.
+    const response=await get('https://semiscope-market-observatory.jennylink63.chatgpt.site/api/universe?verify='+Date.now());
+    const data=await response.json();
+    assert.equal(data.source,'Nasdaq Trader');
+    assert(data.sourceMode==='directory' || data.sourceMode==='snapshot');
+    day(data.asOf);
+    assert(Array.isArray(data.items)&&Number.isSafeInteger(data.count)&&data.count===data.items.length);
+    assert(Array.isArray(data.sources)&&data.sources.length===2&&data.sources.every(s=>s.createdAtET?.slice(0,10)===data.asOf));
+    if(data.sourceMode==='snapshot'){
+      // A stale directory must not trigger a new publication or a "current" claim.
+      return {data:previous,held:true};
+    }
+    await writeFile(destination,JSON.stringify(data));
+    return {data,held:false};
+  }
 }
 
 function checkSnapshot(snapshot) {
@@ -238,11 +278,13 @@ try {
       assert.equal(rankDigest(current),timingRelease.baselineSha256);
     }
     const dataDir = path.join(stage,'data');
-    await execute(process.execPath,[path.join(root,'scripts','prepare-rank-catalog.mjs'),dataDir]);
-    const catalog = JSON.parse(await readFile(path.join(dataDir,'us-listings.json'),'utf8'));
+    const {data:catalog,held}=await stageDirectory(dataDir,previous);
     const date = day(catalog.asOf);
     assert(date>=previous.asOf,'Directory feed predates current public ranking');
-    if (date===previous.asOf && !verifyCurrent && !migrateTiming) {
+    if(held){
+      assert(!verifyCurrent && !migrateTiming,'Source directory unavailable for the required reproduction');
+      await report('retained-directory-unavailable',current,previous);
+    }else if (date===previous.asOf && !verifyCurrent && !migrateTiming) {
       await report('current',current,previous);
     } else {
       // Each computation starts with fresh partitions. The immutable Dolt chunks may be reused.
