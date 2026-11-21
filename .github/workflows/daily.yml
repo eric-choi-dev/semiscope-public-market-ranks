@@ -1,0 +1,64 @@
+name: Daily US market ranks
+on:
+  schedule:
+    - cron: '17 7 * * *'
+    - cron: '41 15 * * *'
+  workflow_dispatch:
+    inputs:
+      verify_current:
+        description: Rebuild the current market day and verify its public release
+        type: boolean
+        default: false
+
+concurrency:
+  group: public-rank-publication
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    steps:
+      - name: Read the reviewed calculation code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install the pinned market database reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/rank-dolt"
+          mkdir -p "$release"
+          curl --fail --location --retry 3 --silent --show-error \
+            https://github.com/dolthub/dolt/releases/download/v2.7.6/dolt-linux-amd64.tar.gz \
+            --output "$release/dolt.tar.gz"
+          echo "02479bf57f3c46c46c4f6977e948d56e88f5ee5f2a73da8226e7ebc31039639e  $release/dolt.tar.gz" | sha256sum --check --status
+          tar -xzf "$release/dolt.tar.gz" -C "$release" dolt-linux-amd64/bin/dolt
+          echo "$release/dolt-linux-amd64/bin" >> "$GITHUB_PATH"
+      - name: Score and verify the public numerical release
+        env:
+          RANK_PUBLISH_TOKEN: ${{ secrets.RANK_PUBLISH_TOKEN }}
+          VERIFY_CURRENT: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_current }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$VERIFY_CURRENT" = "true" ]; then
+            node scripts/refresh-cloud-ranks.mjs --verify-current
+          else
+            node scripts/refresh-cloud-ranks.mjs
+          fi
+      - name: Record the verified publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s last-run.json
+          # gh supplies its ephemeral token through its credential helper only during push.
+          git add -- last-run.json
+          if git diff --staged --quiet --; then exit 0; fi
+          git -c user.name=Semiscope -c user.email=semiscope@users.noreply.github.com commit -m 'Record verified public market ranks'
+          git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' push origin HEAD:main

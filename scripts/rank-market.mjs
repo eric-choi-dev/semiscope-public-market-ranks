@@ -1,0 +1,258 @@
+// Node 20+ and Dolt. Private price data stays in --cache. Only the final
+// CC BY-SA score dataset is written to the site's public data directory.
+import {createReadStream,createWriteStream,existsSync} from 'node:fs';
+import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+import {createInterface} from 'node:readline';
+import {once} from 'node:events';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
+import {parseArgs} from 'node:util';
+import {setTimeout as pause} from 'node:timers/promises';
+import {assessListing} from '../src/explorer-model.mjs';
+import {buildAccumulation,ACCUMULATION_VERSION,ACCUMULATION_WEIGHTS} from '../src/accumulation.mjs';
+
+const {values:args}=parseArgs({options:{
+  dolt:{type:'string'},cache:{type:'string'},db:{type:'string'},'data-dir':{type:'string'},
+  'as-of':{type:'string'},revision:{type:'string'},update:{type:'boolean',default:false}
+}});
+if(args.revision!==undefined && !/^[0-9a-v]{32}$/.test(args.revision))
+  throw Error('A pinned revision must be the full 32-character Dolt commit hash');
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const dir=path.resolve(args['data-dir']??path.join(root,'public','data'));
+const cache=path.resolve(args.cache??path.join(root,'.rank-cache')),db=path.resolve(args.db??path.join(cache,'stockdb'));
+const binary=args.dolt && /[\\/]/.test(args.dolt)?path.resolve(args.dolt):(args.dolt??'dolt');
+const sourceRepo='post-no-preference/stocks';
+const buildVersion='rank-market-1.2';
+const reasonLabels={unsupported_structure:'모델 대상 외 증권 유형',no_source:'가격 자료 없음',not_current:'기준일 체결 자료 없음',
+  short_history:'확정 거래일 504개 미만',invalid_history:'종가·OHLC 품질 확인 필요',uncertain_action:'분할 또는 가격 단절 확인 필요',
+  halted:'장기 거래 공백 이후 이력 부족',benchmark_unavailable:'기준시장 이력 부족'};
+const lookback=1008; // 252 high observations + up to 756 preceding drawdown observations.
+const shardCount=48;
+const datePattern=/^\d{4}-\d{2}-\d{2}$/;
+const sha=string=>createHash('sha256').update(string).digest('hex');
+const fileAt=(stem,id,ext)=>path.join(job,stem+'-'+String(id).padStart(2,'0')+'.'+ext);
+const zeroCounts=()=>Object.fromEntries(Object.keys(reasonLabels).map(k=>[k,0]));
+
+async function atomic(file,data) {
+  const tmp=file+'.tmp-'+process.pid;
+  await writeFile(tmp,data);
+  await rename(tmp,file);
+}
+function command(argv,cwd,output='pipe') {
+  const child=spawn(binary,argv,{cwd,stdio:['ignore',output,'pipe'],windowsHide:true});
+  let errorText='';
+  child.stderr.on('data',s=>{errorText=(errorText+s).slice(-2500);});
+  const done=new Promise((resolve,reject)=>{
+    child.once('error',reject);
+    child.once('close',code=>code===0?resolve():reject(Error('Dolt command failed ('+code+'). '+errorText)));
+  });
+  done.catch(()=>{}); // The consumer can finish draining stdout after an early process error.
+  return {child,done};
+}
+async function textCommand(argv,cwd=db) {
+  const {child,done}=command(argv,cwd);
+  let output='';
+  for await(const s of child.stdout)output+=s;
+  await done;return output;
+}
+const query=q=>textCommand(['sql','-r','csv','-q',q]);
+const scalar=async q=>(await query(q)).trim().split(/\r?\n/)[1];
+async function streamQuery(q,handle) {
+  const {child,done}=command(['sql','-r','csv','-q',q],db);
+  const lines=createInterface({input:child.stdout,crlfDelay:Infinity});
+  let header=true;
+  try{
+    for await(const line of lines){if(header){header=false;continue;}const wait=handle(line);if(wait)await wait;}
+    await done;
+  } catch(error){child.kill();throw error;}
+}
+function shard(symbol) {
+  let n=0;for(const ch of symbol)n=(n*31+ch.charCodeAt(0))>>>0;
+  return n%shardCount;
+}
+async function partition() {
+  const marker=path.join(job,'parts.done');
+  if(existsSync(marker))return;
+  // Composite primary key (date, act_symbol) permits one local chronological
+  // scan of the source, independent of the number of listings.
+  const temporary=Array.from({length:shardCount},(_,i)=>fileAt('bars',i,'csv')+'.tmp-'+process.pid);
+  const streams=temporary.map(file=>createWriteStream(file));
+  const startDate=new Date(asOf+'T00:00:00Z');
+  startDate.setUTCFullYear(startDate.getUTCFullYear()-5);
+  const start=startDate.toISOString().slice(0,10);
+  let retained=0;
+  const sql="SELECT act_symbol,date,open,high,low,close,volume FROM ohlcv AS OF '"+commit+"' WHERE date >= '"+start+"' AND date <= '"+asOf+"' ORDER BY date,act_symbol";
+  try{
+    await streamQuery(sql,line=>{
+      const symbol=line.slice(0,line.indexOf(','));
+      if(!wanted.has(symbol))return;
+      retained++;
+      const file=streams[shard(symbol)];
+      if(!file.write(line+'\n'))return once(file,'drain');
+    });
+    await Promise.all(streams.map(s=>new Promise((resolve,reject)=>{s.on('error',reject);s.end(resolve);})));
+    for(let i=0;i<temporary.length;i++)await rename(temporary[i],fileAt('bars',i,'csv'));
+    await atomic(marker,JSON.stringify({retained,start,asOf}));
+    console.log('Source scan complete:',retained,'candidate bars');
+  } catch(error){streams.forEach(s=>s.destroy());throw error;}
+}
+async function loadShard(id,only) {
+  const map=new Map(),lines=createInterface({input:createReadStream(fileAt('bars',id,'csv')),crlfDelay:Infinity});
+  for await(const line of lines) {
+    const [symbol,date,...s]=line.split(',');
+    if(only && !only.has(symbol))continue;
+    let bars=map.get(symbol);if(!bars){bars=[];map.set(symbol,bars);}
+    bars.push([date,...s.map(v=>v===''?null:Number(v))]);
+  }
+  return map;
+}
+function validBar(c) {
+  const [date,o,h,l,x,v]=c;
+  return datePattern.test(date) && [o,h,l,x].every(v=>Number.isFinite(v)&&v>0) &&
+    h>=Math.max(o,l,x) && l<=Math.min(o,x) && Number.isFinite(v) && v>=0;
+}
+function adjusted(symbol,raw) {
+  if(!raw?.length)return {reason:'no_source'};
+  if(raw.at(-1)[0]!==asOf || !(raw.at(-1)[5]>0))return {reason:'not_current'};
+  const bars=[];
+  let priorSession=-1,cutForGap=false;
+  for(const c of raw) {
+    // A zero-volume observation does not establish a traded price that day.
+    if(c[5]===0)continue;
+    const session=calendar.get(c[0]);
+    if(session==null)continue;
+    if(priorSession>=0 && session-priorSession>10){bars.length=0;cutForGap=true;}
+    priorSession=session;bars.push(c);
+  }
+  if(bars.length<504)return {reason:cutForGap?'halted':'short_history'};
+  const subset=bars.slice(-lookback);
+  if(!subset.every(validBar))return {reason:'invalid_history'};
+  const adjustedBars=new Array(subset.length);
+  const actions=splits.get(symbol)??[];
+  let actionIndex=actions.length-1,scale=1;
+  for(let i=subset.length-1;i>=0;i--) {
+    const c=subset[i];
+    const next=[c[0],c[1]*scale,c[2]*scale,c[3]*scale,c[4]*scale,c[5]/scale];
+    if(!next.slice(1).every(Number.isFinite))return {reason:'invalid_history'};
+    adjustedBars[i]=next;
+    if(i===0)break;
+    const prior=subset[i-1];let factor=1;
+    while(actionIndex>=0 && actions[actionIndex].date>prior[0]) {
+      const action=actions[actionIndex--];
+      if(action.date<=c[0])factor*=action.ratio;
+    }
+    if(!Number.isFinite(factor)||factor<=0)return {reason:'uncertain_action'};
+    // Cash dividends are untouched. The ex-date is already quoted on its new
+    // share basis, so only preceding observations receive the conversion.
+    const overnight=c[1]/prior[4],adjustedOvernight=overnight*factor;
+    if(Math.abs(Math.log(factor))>Math.log(1.25) &&
+      Math.abs(Math.log(adjustedOvernight))>=Math.abs(Math.log(overnight)))return {reason:'uncertain_action'};
+    if(adjustedOvernight>1.70 || adjustedOvernight<1/1.70)return {reason:'uncertain_action'};
+    scale/=factor;
+  }
+  return {ticker:symbol,asOf,candles:adjustedBars};
+}
+function evaluate(listing,raw,refs) {
+  const symbol=listing.symbol,asset=adjusted(symbol,raw);
+  if(asset.reason)return {symbol,reason:asset.reason};
+  const reference=assessListing(listing).reference;
+  const set={...refs,[symbol]:asset};
+  const model=buildAccumulation(set,symbol,{referenceTicker:reference});
+  if(!model)return {symbol,reason:'benchmark_unavailable'};
+  const {252:one,504:two}=model.horizons;
+  return {symbol,providerSymbol:listing.providerSymbol??symbol,name:listing.name,exchange:listing.exchange,
+    type:listing.type,reference,asOf,nBars:asset.candles.length,score252:one.score,score504:two.score,
+    factors:one.components.map(c=>c.score),inputs:model.inputs};
+}
+function assignRank(rows,horizon) {
+  const score='score'+horizon,rank='rank'+horizon;
+  rows.sort((a,b)=>b[score]-a[score] || a.symbol.localeCompare(b.symbol,'en'));
+  for(let i=0;i<rows.length;i++)rows[i][rank]=i && rows[i][score]===rows[i-1][score]?rows[i-1][rank]:i+1;
+}
+
+await mkdir(cache,{recursive:true});
+if(!existsSync(path.join(db,'.dolt'))) {
+  await mkdir(path.dirname(db),{recursive:true});
+  // A fresh historical replay needs the commit's objects even after the
+  // source advances. Normal daily execution only needs the tip.
+  const depth=args.revision?['--single-branch','--branch','master']:['--depth','1'];
+  await textCommand(['clone',...depth,sourceRepo,db],cache);
+} else if(args.update) {
+  // Fetching a tracking ref needs no login or commit identity. Read immutable
+  // tables at that ref below, without merging or altering the working branch.
+  for(let attempt=0;;attempt++) {
+    try {await textCommand(['fetch','origin','master'],db);break;}
+    catch(error) {
+      if(attempt>=2 || !/read only|lock/i.test(error.message))throw error;
+      await pause((attempt+1)*1500);
+    }
+  }
+}
+const ref=args.revision??'origin/master';
+const commit=await scalar("SELECT dolt_hashof('"+ref+"') AS revision");
+if(!/^[0-9a-v]{32}$/.test(commit??''))throw Error('Dolt revision could not be established');
+if(args.revision && commit!==args.revision)throw Error('Local Dolt mirror does not contain the requested revision');
+const latest=await scalar("SELECT MAX(date) AS latest FROM ohlcv AS OF '"+commit+"'");
+const asOf=args['as-of']??latest;
+if(!datePattern.test(asOf)||asOf>latest)throw Error('No source close for requested date');
+const catalog=JSON.parse(await readFile(path.join(dir,'us-listings.json'),'utf8'));
+if(catalog.asOf!==asOf)throw Error('Listing date '+catalog.asOf+' differs from price date '+asOf);
+if(!catalog.items?.length || catalog.items.length!==catalog.count || new Set(catalog.items.map(l=>l.symbol)).size!==catalog.count)
+  throw Error('Incomplete or ambiguous listing directory');
+const candidates=catalog.items.filter(l=>assessListing(l).reference),wanted=new Map(candidates.map(l=>[l.symbol,l]));
+const groups=Array.from({length:shardCount},()=>[]);
+for(const l of candidates)groups[shard(l.symbol)].push(l);
+const defs=await Promise.all(['../src/accumulation.mjs','../src/explorer-model.mjs','./rank-market.mjs'].map(rel=>readFile(new URL(rel,import.meta.url))));
+const configHash=sha([catalog.asOf,JSON.stringify(candidates),...defs].join('\n')).slice(0,14);
+const job=path.join(cache,asOf+'-'+commit+'-'+configHash);
+await mkdir(job,{recursive:true});
+await partition();
+// Fetch once locally, with commit-keyed partitions. Neither API requests per
+// symbol nor exchange credentials are required. Later re-runs only Dolt-pull
+// changed database chunks; a new commit causes a fresh split/action scan.
+const splits=new Map();
+await streamQuery("SELECT act_symbol,ex_date,to_factor,for_factor FROM split AS OF '"+commit+"' WHERE ex_date <= '"+asOf+"' ORDER BY act_symbol,ex_date",line=>{
+  const [symbol,date,to,from]=line.split(',');
+  if(!wanted.has(symbol))return;
+  const a=splits.get(symbol)??[];a.push({date,ratio:Number(to)/Number(from)});splits.set(symbol,a);
+});
+const actionThrough=await scalar("SELECT MAX(ex_date) AS latest FROM split AS OF '"+commit+"' WHERE ex_date <= '"+asOf+"'");
+const refSymbols=new Set(['SPY',...candidates.map(l=>assessListing(l).reference)]);
+const rawRefs=new Map();
+for(const id of new Set([...refSymbols].map(shard)))for(const [k,v] of await loadShard(id,refSymbols))rawRefs.set(k,v);
+const spy=rawRefs.get('SPY')??[];
+if(spy.length<504 || spy.at(-1)[0]!==asOf || !(spy.at(-1)[5]>0))throw Error('SPY trading calendar unavailable for cutoff');
+const calendar=new Map(spy.filter(c=>c[5]>0).map((c,i)=>[c[0],i]));
+const refs={};
+for(const [key,bars] of rawRefs){const ref=adjusted(key,bars);if(!ref.reason)refs[key]=ref;}
+if(!refs.SPY)throw Error('Benchmark price integrity could not be verified');
+const rows=[],excludedBySymbol={},excluded=zeroCounts();
+excluded.unsupported_structure=catalog.count-candidates.length;
+for(let id=0;id<shardCount;id++) {
+  const part=fileAt('scores',id,'json');
+  let values;
+  if(existsSync(part))values=JSON.parse(await readFile(part,'utf8'));
+  else {
+    const bars=await loadShard(id);
+    values=groups[id].map(l=>evaluate(l,bars.get(l.symbol),refs));
+    await atomic(part,JSON.stringify(values));
+  }
+  for(const value of values) {
+    if(value.reason){excluded[value.reason]++;excludedBySymbol[value.symbol]=value.reason;}
+    else rows.push(value);
+  }
+  if((id+1)%8===0)console.log('Evaluated shards',id+1,'/',shardCount,'· scores',rows.length);
+}
+assignRank(rows,504);assignRank(rows,252);
+const source={name:'DoltHub · post-no-preference/stocks',url:'https://www.dolthub.com/repositories/post-no-preference/stocks',
+  license:'CC BY-SA 4.0',licenseUrl:'https://creativecommons.org/licenses/by-sa/4.0/',commit,actionThrough,
+  changeNotice:'Semiscope가 일별 OHLCV에 주식 분할을 반영하고 정해진 모형으로 장기 점수와 순위를 계산했습니다. 가공한 순위 데이터에도 CC BY-SA 4.0을 적용합니다.'};
+const output={schemaVersion:1,modelVersion:ACCUMULATION_VERSION,buildVersion,asOf,generatedAt:new Date().toISOString(),
+  source,listingSource:catalog.source,weights:ACCUMULATION_WEIGHTS,minimumSessions:504,maximumSessions:lookback,
+  coverage:{listed:catalog.count,eligible:candidates.length,scored:rows.length,excluded},reasonLabels,excludedBySymbol,rows};
+if(rows.length+Object.values(excluded).reduce((a,b)=>a+b,0)!==catalog.count || !rows.length)
+  throw Error('Rank population reconciliation failed');
+await atomic(path.join(dir,'long-ranks.json'),JSON.stringify(output));
+console.log('Verified ranking snapshot written.',asOf,JSON.stringify(output.coverage));
