@@ -19,6 +19,7 @@ permissions:
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 48
     steps:
@@ -26,18 +27,26 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Install the pinned market database reader
+      - name: Prepare the on-demand market database reader
         shell: bash
         run: |
           set -euo pipefail
+          cat > "$RUNNER_TEMP/rank-dolt-command" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
           release="$RUNNER_TEMP/rank-dolt"
-          mkdir -p "$release"
-          curl --fail --location --retry 3 --silent --show-error \
-            https://github.com/dolthub/dolt/releases/download/v2.7.6/dolt-linux-amd64.tar.gz \
-            --output "$release/dolt.tar.gz"
-          echo "02479bf57f3c46c46c4f6977e948d56e88f5ee5f2a73da8226e7ebc31039639e  $release/dolt.tar.gz" | sha256sum --check --status
-          tar -xzf "$release/dolt.tar.gz" -C "$release" dolt-linux-amd64/bin/dolt
-          echo "$release/dolt-linux-amd64/bin" >> "$GITHUB_PATH"
+          if [ ! -x "$release/dolt-linux-amd64/bin/dolt" ]; then
+            mkdir -p "$release"
+            curl --fail --location --retry 3 --silent --show-error \
+              https://github.com/dolthub/dolt/releases/download/v2.7.6/dolt-linux-amd64.tar.gz \
+              --output "$release/dolt.tar.gz"
+            echo "02479bf57f3c46c46c4f6977e948d56e88f5ee5f2a73da8226e7ebc31039639e  $release/dolt.tar.gz" | sha256sum --check --status
+            tar -xzf "$release/dolt.tar.gz" -C "$release" dolt-linux-amd64/bin/dolt
+          fi
+          exec "$release/dolt-linux-amd64/bin/dolt" "$@"
+          SH
+          chmod 700 "$RUNNER_TEMP/rank-dolt-command"
+          echo "DOLT_EXECUTABLE=$RUNNER_TEMP/rank-dolt-command" >> "$GITHUB_ENV"
       - name: Score and verify the public numerical release
         env:
           RANK_PUBLISH_TOKEN: ${{ secrets.RANK_PUBLISH_TOKEN }}
