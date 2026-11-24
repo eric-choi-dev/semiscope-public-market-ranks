@@ -1,9 +1,9 @@
 {
-  "state": "retained-price-source-behind",
-  "checkedAt": "2026-11-24T16:27:26.820Z",
+  "state": "unified-release-published",
+  "checkedAt": "2026-11-24T16:51:44.272Z",
   "asOf": "2026-11-23",
-  "version": "v5",
-  "sha256": "f06cfa712d054a0c2a7061adcb5fe0cc9152b34273e6c1bb7056221241e04b2e",
+  "version": "v6",
+  "sha256": "e127513f82f1a540a5a8d64dda9dfc6c28370adc70d7fa05d5104acaaeb0cf3c",
   "coverage": {
     "listed": 13277,
     "eligible": 5294,
@@ -20,9 +20,6 @@
     }
   },
   "sourceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
-  "observedDirectoryDate": "2026-11-24",
-  "availablePriceDate": "2026-11-23",
-  "availablePriceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
   "unifiedCoverage": {
     "listed": 13277,
     "eligible": 5297,
@@ -35,9 +32,17 @@
       "invalid_history": 0,
       "uncertain_action": 354,
       "halted": 72,
+      "insufficient_calibration": 0,
       "inactive_or_discontinuous": 0
     }
   },
-  "unifiedModelVersion": "unified-entry-1.0",
+  "unifiedModelVersion": "bottom-probability-2.0",
+  "unifiedTargetId": "capped-40-v1",
+  "unifiedCalibration": {
+    "version": "bottom-calibration-1.0",
+    "sha256": "300359ee13827a39df3f800f09b04d4c1f33b68a97fcc20753101ecf357c6c45",
+    "vintage": "2026-01-01",
+    "outcomesThrough": "2025-11-03"
+  },
   "directorySha256": "ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2"
 }
