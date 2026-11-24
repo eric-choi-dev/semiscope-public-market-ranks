@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       migrate_unified:
-        description: Rebuild both reviewed long-term entry indices on the pinned trading day
+        description: Rebuild the integrated long-term index for both holding-period views
         type: boolean
         default: false
       expected_content_sha256:

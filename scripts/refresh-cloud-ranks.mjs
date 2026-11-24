@@ -27,13 +27,13 @@ const packetFile=values['check-packets-file'];
 assert([verifyCurrent,migrateUnified,Boolean(reviewFile),Boolean(packetFile)].filter(Boolean).length <= 1,'Choose one release mode');
 if(migrateUnified)assert.match(values['expected-content-sha256']||'',/^[a-f0-9]{64}$/,'Pass the verified content SHA-256 from the independent candidate review');
 const release={
-  baselineSiteVersion:7,
-  baselineSha256:'a3f775f83e402894748ebd3d33265101896dc01f414fc3a062d4c7a1596fa06c',
+  baselineSiteVersion:8,
+  baselineSha256:'6753e78f8e1d922af8a8e18cc3dcc7b565b6943668c4e807f09dedc4dfe9c8ea',
   directorySha256:'ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2',
   asOf:'2026-11-23',sourceCommit:'njs8j85h7atjqje4ldfu4c4lillpka3t',
-  previousBuild:'rank-market-5.0',previousModel:'long-entry-index-3.0',
-  previousModelHash:'929dbafe672e978795b10d3e6bc98c971b2f1a31283123aeef336d41e1eb3295',
-  nextBuild:'rank-market-6.0',nextModel:'long-entry-index-4.0',
+  previousBuild:'rank-market-6.0',previousModel:'long-entry-index-4.0',
+  previousModelHash:'8b08d246c8ceca1cafe013483bd7d4f63e282e40d5edb9b70e8a14c13276e64a',
+  nextBuild:'rank-market-7.0',nextModel:'long-entry-index-5.0',
 };
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cache = path.resolve(process.env.RANK_CACHE_DIR || path.join(tmpdir(),'semiscope-rank-cache'));
@@ -252,7 +252,7 @@ function scoreFromPacket(packet,row,horizon) {
   assert.equal(index.version,release.nextModel);
   assert.equal(index.horizon,horizon);
   assert.equal(index.date,row.asOf);
-  assert.equal(index.entryQualified,index.phase==='response'&&index.score>=80,'Index signal disagrees with its published phase');
+  assert.equal(index.entryQualified,index.score>=80,'Index signal disagrees with its published threshold');
   assert.deepEqual(encodeUnifiedResult(index,horizon),packet,'Noncanonical index packet for '+row.symbol);
   return index.score;
 }
@@ -283,7 +283,11 @@ function checkSnapshot(snapshot) {
     assert(Number.isSafeInteger(row.nBars)&&row.nBars>=UNIFIED_MIN_BARS&&row.nBars<=UNIFIED_MIN_BARS+1,'Unexpected input observation count');
     dualKeys(row.indices);dualKeys(row.ranks);
     assert(horizons.every(h=>Array.isArray(row.indices[h])),'Both complete indices are required for '+row.symbol);
-    assert(decodeUnifiedResult(row.indices,row.asOf),'The two horizons use inconsistent common inputs for '+row.symbol);
+    const pair=decodeUnifiedResult(row.indices,row.asOf);
+    assert(pair,'The two horizons use inconsistent common inputs for '+row.symbol);
+    assert.equal(pair.horizons[126].score,pair.horizons[252].score,'The integrated score depends on the selected outcome horizon');
+    assert.equal(pair.horizons[126].phase,pair.horizons[252].phase,'Conflicting entry phases');
+    assert.equal(row.ranks[126],row.ranks[252],'Conflicting entry ranks');
     scored.set(row.symbol,row);
   }
   const symbols=[...scored.keys()];

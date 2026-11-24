@@ -25,7 +25,7 @@ const dir=path.resolve(args['data-dir']??path.join(root,'public','data'));
 const cache=path.resolve(args.cache??path.join(root,'.rank-cache')),db=path.resolve(args.db??path.join(cache,'stockdb'));
 const binary=args.dolt && /[\\/]/.test(args.dolt)?path.resolve(args.dolt):(args.dolt??'dolt');
 const sourceRepo='post-no-preference/stocks';
-const buildVersion='rank-market-6.0';
+const buildVersion='rank-market-7.0';
 const horizons=[126,252];
 const reasonLabels={unsupported_structure:'모델 대상 외 증권 유형',no_source:'가격 자료 없음',not_current:'기준일 체결 자료 없음',
   short_history:'지수 계산에 필요한 확정 거래일 부족',invalid_history:'종가·OHLC 품질 확인 필요',uncertain_action:'분할 또는 가격 단절 확인 필요',
@@ -179,6 +179,7 @@ function evaluate(listing,raw) {
       throw Error('Unrepresentable '+horizon+'-session result for '+symbol);
     row.indices[horizon]=packet;scores[horizon]=selected.score;
   }
+  if(scores[126]!==scores[252])throw Error('The integrated index differs by outcome horizon for '+symbol);
   return {symbol,row,scores};
 }
 
@@ -345,7 +346,7 @@ for(const h of horizons) {
 const rows=entries.map(x=>x.row).sort((a,b)=>a.symbol.localeCompare(b.symbol,'en'));
 const source={name:'DoltHub · post-no-preference/stocks',url:'https://www.dolthub.com/repositories/post-no-preference/stocks',
   license:'CC BY-SA 4.0',licenseUrl:'https://creativecommons.org/licenses/by-sa/4.0/',commit,actionThrough,
-  changeNotice:'Semiscope가 분할 조정 일봉으로 126거래일 및 252거래일 장기 진입 지수와 기간별 순위를 계산했습니다. 가공 지수와 순위 자료에도 CC BY-SA 4.0을 적용합니다.'};
+  changeNotice:'Semiscope가 분할 조정 일봉으로 하나의 장기 저점 지수와 공동 순위를 계산했습니다. 같은 측정값으로 126·252거래일 보유 성과를 따로 평가합니다. 가공 지수와 순위 자료에도 CC BY-SA 4.0을 적용합니다.'};
 const output={schemaVersion:2,modelVersion:UNIFIED_VERSION,buildVersion,asOf,generatedAt:new Date().toISOString(),
   horizons,minimumSessions:UNIFIED_MIN_BARS,modelSourceSha256,source,listingSource:catalog.source,
   coverage:{listed:catalog.count,eligible:wanted.size,byHorizon},reasonLabels,excludedBySymbol,rows};
