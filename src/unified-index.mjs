@@ -9,6 +9,7 @@ const limits={
   drawdown252Pct:[-100,0],downside63Pct:[0,Infinity],atr14Pct:[0,Infinity],rsi14:[0,100],
   return5Pct:[-100,Infinity],return21Pct:[-100,Infinity],newLowDays20:[0,20],closeLocationPct:[0,100],
   rsiDivergence:[-100,100],accelerationZ:[-Infinity,Infinity],
+  floorAge20:[0,19],upDays5:[0,5],meanTurnZ:[-Infinity,Infinity],upsideDailyPct:[0,Infinity],
   drawdownPct:[-100,0],rangePositionPct:[0,100],localPositionPct:[0,100],lowDistanceAtr:[0,Infinity],drawdownVol:[0,Infinity],
   responseEvidencePct:[0,100]
 };
@@ -40,13 +41,13 @@ export function buildUnifiedTape(candles,horizon=126) {
 
 function validCeiling(h,phase,ceiling){
   if(phase==='response')return ceiling===100;
-  if(phase==='search')return ceiling===79;
-  if(phase==='decline')return bounded(ceiling,h===252?54:48,h===252?68:62);
+  if(phase==='search')return ceiling===(h===252?66:64);
+  if(phase==='decline')return bounded(ceiling,34,h===252?58:56);
   return bounded(ceiling,12,32)||bounded(ceiling,h===252?48:40,h===252?64:56);
 }
 
 function decodePacket(packet,date,h) {
-  if(!Array.isArray(packet)||packet.length!==11+fields.length||packet[0]!==3||!validDate(date)||
+  if(!Array.isArray(packet)||packet.length!==11+fields.length||packet[0]!==4||!validDate(date)||
       !isHorizon(packet[1])||(h!==undefined&&Number(h)!==packet[1]))return null;
   for(const x of packet)if(!Number.isSafeInteger(x))return null;
   const [,horizon,score,phaseCode,ceiling,raw,percent]=packet,phase=ENTRY_PHASES[phaseCode];
@@ -56,7 +57,7 @@ function decodePacket(packet,date,h) {
   const inputs={};
   for(const [i,name] of fields.entries()){
     const value=packet[11+i]/100;
-    if(!bounded(value,...limits[name])||(name==='newLowDays20'&&!Number.isInteger(value)))return null;
+    if(!bounded(value,...limits[name])||(['newLowDays20','floorAge20','upDays5'].includes(name)&&!Number.isInteger(value)))return null;
     inputs[name]=value;
   }
   if(horizon===252&&inputs.drawdownPct!==inputs.drawdown252Pct)return null;
@@ -81,7 +82,7 @@ function pack(model,horizon){
     values.push(Math.round(10*part.score));
   }
   if(!fields.every(key=>Number.isFinite(m.inputs[key])))return null;
-  const packet=[3,m.horizon,m.score,ENTRY_PHASES.indexOf(m.phase),m.ceiling,Math.round(10*m.rawStrength),
+  const packet=[4,m.horizon,m.score,ENTRY_PHASES.indexOf(m.phase),m.ceiling,Math.round(10*m.rawStrength),
     Math.round(100*m.percentile),...values,...fields.map(key=>Math.round(100*m.inputs[key]))];
   const recovered=decodePacket(packet,m.date,horizon);
   return recovered&&recovered.uncappedScore===m.uncappedScore&&recovered.entryQualified===m.entryQualified?packet:null;

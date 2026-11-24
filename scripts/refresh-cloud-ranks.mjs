@@ -27,12 +27,13 @@ const packetFile=values['check-packets-file'];
 assert([verifyCurrent,migrateUnified,Boolean(reviewFile),Boolean(packetFile)].filter(Boolean).length <= 1,'Choose one release mode');
 if(migrateUnified)assert.match(values['expected-content-sha256']||'',/^[a-f0-9]{64}$/,'Pass the verified content SHA-256 from the independent candidate review');
 const release={
-  baselineSiteVersion:6,
-  baselineSha256:'e127513f82f1a540a5a8d64dda9dfc6c28370adc70d7fa05d5104acaaeb0cf3c',
+  baselineSiteVersion:7,
+  baselineSha256:'a3f775f83e402894748ebd3d33265101896dc01f414fc3a062d4c7a1596fa06c',
   directorySha256:'ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2',
   asOf:'2026-11-23',sourceCommit:'njs8j85h7atjqje4ldfu4c4lillpka3t',
-  previousBuild:'rank-market-4.0',previousModel:'bottom-probability-2.0',previousTarget:'capped-40-v1',nextBuild:'rank-market-5.0',
-  nextModel:'long-entry-index-3.0',
+  previousBuild:'rank-market-5.0',previousModel:'long-entry-index-3.0',
+  previousModelHash:'929dbafe672e978795b10d3e6bc98c971b2f1a31283123aeef336d41e1eb3295',
+  nextBuild:'rank-market-6.0',nextModel:'long-entry-index-4.0',
 };
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cache = path.resolve(process.env.RANK_CACHE_DIR || path.join(tmpdir(),'semiscope-rank-cache'));
@@ -351,8 +352,10 @@ function migrationBaseline(previous,current) {
   assert.equal(current.version,release.baselineSiteVersion,'Migration baseline site version changed');
   assert.equal(rankDigest(current),release.baselineSha256,'Migration baseline bytes changed');
   assert.equal(previous.buildVersion,release.previousBuild);
-  assert.equal(previous.unifiedModelVersion,release.previousModel);
-  assert.equal(previous.unifiedTargetId,release.previousTarget);
+  assert.equal(previous.schemaVersion,2);
+  assert.equal(previous.modelVersion,release.previousModel);
+  assert.equal(previous.modelSourceSha256,release.previousModelHash);
+  assert.deepEqual(previous.horizons,horizons);
   assert.equal(previous.asOf,release.asOf);
   assert.equal(previous.source.commit,release.sourceCommit);
 }
@@ -362,10 +365,9 @@ function compareMigration(next,previous,current) {
   checkSnapshot(next);
   assert.equal(next.asOf,previous.asOf);
   assert.equal(next.listingSource,previous.listingSource);
-  assert.equal(next.coverage.listed,previous.unifiedCoverage.listed);
-  const priorIssues=new Set([...previous.rows,...previous.unifiedOnlyRows].filter(r=>r.unified!=null)
-    .map(r=>r.symbol).concat(Object.keys(previous.unifiedExcludedBySymbol)));
-  assert.equal(priorIssues.size,previous.unifiedCoverage.eligible);
+  assert.equal(next.coverage.listed,previous.coverage.listed);
+  const priorIssues=new Set(previous.rows.map(r=>r.symbol).concat(Object.keys(previous.excludedBySymbol)));
+  assert.equal(priorIssues.size,previous.coverage.eligible);
   const nextIssues=new Set(next.rows.map(r=>r.symbol).concat(Object.keys(next.excludedBySymbol)));
   assert.deepEqual(nextIssues,priorIssues,'The model migration changed the eligible issue cohort');
   for(const key of ['name','url','license','licenseUrl','commit','actionThrough'])assert.equal(next.source[key],previous.source[key]);
