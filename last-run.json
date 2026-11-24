@@ -1,48 +1,51 @@
 {
   "state": "unified-release-published",
-  "checkedAt": "2026-11-24T16:51:44.272Z",
+  "checkedAt": "2026-11-24T17:28:18.525Z",
   "asOf": "2026-11-23",
-  "version": "v6",
-  "sha256": "e127513f82f1a540a5a8d64dda9dfc6c28370adc70d7fa05d5104acaaeb0cf3c",
+  "version": "v7",
+  "sha256": "a3f775f83e402894748ebd3d33265101896dc01f414fc3a062d4c7a1596fa06c",
+  "buildVersion": "rank-market-5.0",
+  "modelVersion": "long-entry-index-3.0",
   "coverage": {
     "listed": 13277,
-    "eligible": 5294,
-    "scored": 3470,
-    "excluded": {
-      "unsupported_structure": 7983,
-      "no_source": 6,
-      "not_current": 78,
-      "short_history": 924,
-      "invalid_history": 0,
-      "uncertain_action": 656,
-      "halted": 160,
-      "benchmark_unavailable": 0
+    "eligible": 5297,
+    "byHorizon": {
+      "126": {
+        "scored": 3858,
+        "atLeast80": 5,
+        "excluded": {
+          "unsupported_structure": 7980,
+          "no_source": 6,
+          "not_current": 41,
+          "short_history": 800,
+          "invalid_history": 0,
+          "uncertain_action": 480,
+          "halted": 112,
+          "inactive_or_discontinuous": 0
+        }
+      },
+      "252": {
+        "scored": 3858,
+        "atLeast80": 21,
+        "excluded": {
+          "unsupported_structure": 7980,
+          "no_source": 6,
+          "not_current": 41,
+          "short_history": 800,
+          "invalid_history": 0,
+          "uncertain_action": 480,
+          "halted": 112,
+          "inactive_or_discontinuous": 0
+        }
+      }
     }
   },
   "sourceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
-  "unifiedCoverage": {
-    "listed": 13277,
-    "eligible": 5297,
-    "scored": 4396,
-    "excluded": {
-      "unsupported_structure": 7980,
-      "no_source": 6,
-      "not_current": 41,
-      "short_history": 428,
-      "invalid_history": 0,
-      "uncertain_action": 354,
-      "halted": 72,
-      "insufficient_calibration": 0,
-      "inactive_or_discontinuous": 0
-    }
-  },
-  "unifiedModelVersion": "bottom-probability-2.0",
-  "unifiedTargetId": "capped-40-v1",
-  "unifiedCalibration": {
-    "version": "bottom-calibration-1.0",
-    "sha256": "300359ee13827a39df3f800f09b04d4c1f33b68a97fcc20753101ecf357c6c45",
-    "vintage": "2026-01-01",
-    "outcomesThrough": "2025-11-03"
-  },
+  "horizons": [
+    126,
+    252
+  ],
+  "modelSourceSha256": "929dbafe672e978795b10d3e6bc98c971b2f1a31283123aeef336d41e1eb3295",
+  "minimumSessions": 504,
   "directorySha256": "ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2"
 }
