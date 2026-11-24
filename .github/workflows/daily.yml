@@ -36,6 +36,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Prepare the on-demand market database reader
+        id: market_tools
         shell: bash
         run: |
           set -euo pipefail
@@ -85,3 +86,24 @@ jobs:
           if git diff --staged --quiet --; then exit 0; fi
           git -c user.name=Semiscope -c user.email=semiscope@users.noreply.github.com commit -m 'Record verified public market ranks'
           git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' push origin HEAD:main
+      - name: Verify new regular sessions in the independent price history
+        id: history_delta
+        if: ${{ !cancelled() && steps.market_tools.outcome == 'success' && !inputs.verify_current && !inputs.migrate_unified }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          delta_checkout="$RUNNER_TEMP/semiscope-history-deltas"
+          git clone --quiet --depth=1 --single-branch --branch history-deltas \
+            'https://github.com/eric-choi-dev/semiscope-public-market-ranks.git' "$delta_checkout"
+          node scripts/refresh-history-deltas.mjs --checkout "$delta_checkout"
+      - name: Fast-forward only the public price-data branch
+        if: ${{ !cancelled() && steps.history_delta.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/semiscope-history-deltas"
+          if [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/history-deltas)" ]; then exit 0; fi
+          git merge-base --is-ancestor origin/history-deltas HEAD
+          git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' push origin HEAD:refs/heads/history-deltas
