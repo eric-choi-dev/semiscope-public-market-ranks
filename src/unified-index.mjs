@@ -1,93 +1,93 @@
-import {BOTTOM_MIN_BARS, BOTTOM_INPUTS, BOTTOM_PARTS, bottomComponents, buildBottomStrengthTape, latestBottomStrength} from './bottom-strength.mjs';
-import {BOTTOM_MODEL_VERSION, calibrateBottomStrength} from './bottom-calibration.mjs';
+import {ENTRY_VERSION,ENTRY_MIN_BARS,ENTRY_HORIZONS,ENTRY_PHASES,ENTRY_PARTS,COMMON_FIELDS,HORIZON_FIELDS,
+  buildLongEntryTape,latestLongEntry,makeEntryLeaf} from './long-entry-index.mjs';
 
-export const UNIFIED_VERSION = BOTTOM_MODEL_VERSION;
-export const UNIFIED_MIN_BARS = BOTTOM_MIN_BARS;
-
-const structural = Object.freeze({
-  probability: 0, rate: null, n: 0, wins: 0, ci95: null, group: 'structural',
-  vintage: null, through: null, baselinePct: null, blockCount: 0, tickerCount: 0,
-  low: null, high: null, greenEligible: false
-});
-
-// Zone membership is itself part of the named future event. Outside the zone
-// the event is impossible by definition; inside it, only prior matured outcomes
-// may supply a probability. The feature sum measures strength, not likelihood.
-function resultFromRaw(raw) {
-  if (!raw) return null;
-  const calibration = raw.zone ? calibrateBottomStrength(raw.rawStrength, raw.date, 'pooled', raw.inputs.atr14Pct) : structural;
-  const probability = calibration.probability;
-  const label = !raw.zone ? '저점권 조건 밖' : probability === null ? '과거 표본 부족' : '저점권 반등 확률';
-  return {version: UNIFIED_VERSION, ...raw, probability, score: probability, label,
-    greenEligible: calibration.greenEligible, calibration};
+export const UNIFIED_VERSION=ENTRY_VERSION;
+export const UNIFIED_MIN_BARS=ENTRY_MIN_BARS;
+export const UNIFIED_HORIZONS=Object.freeze([...ENTRY_HORIZONS]);
+const fields=[...COMMON_FIELDS,...HORIZON_FIELDS];
+const limits={
+  drawdown252Pct:[-100,0],downside63Pct:[0,Infinity],atr14Pct:[0,Infinity],rsi14:[0,100],
+  return5Pct:[-100,Infinity],return21Pct:[-100,Infinity],newLowDays20:[0,20],closeLocationPct:[0,100],
+  rsiDivergence:[-100,100],accelerationZ:[-Infinity,Infinity],
+  drawdownPct:[-100,0],rangePositionPct:[0,100],localPositionPct:[0,100],lowDistanceAtr:[0,Infinity],drawdownVol:[0,Infinity],
+  responseEvidencePct:[0,100]
+};
+const isHorizon=value=>value===126||value===252;
+const bounded=(x,min,max)=>Number.isFinite(x)&&x>=min&&x<=max;
+function validDate(date){
+  if(typeof date!=='string'||!/^\d{4}-\d\d-\d\d$/.test(date))return false;
+  const t=Date.parse(date+'T00:00:00Z');
+  return Number.isFinite(t)&&new Date(t).toISOString().slice(0,10)===date;
 }
 
-export function latestUnifiedIndex(candles) {
-  return resultFromRaw(latestBottomStrength(candles));
+// The selected view retains the measurement's price, time and source metadata.
+export function selectUnifiedHorizon(model,horizon=126) {
+  horizon=Number(horizon);
+  if(model?.version!==ENTRY_VERSION||!isHorizon(horizon))return null;
+  const leaf=model.horizons?.[horizon]??(model.horizon===horizon?model:null);
+  if(leaf?.version!==ENTRY_VERSION||leaf.date!==model.date||leaf.horizon!==horizon)return null;
+  return model.horizon===horizon?model:{...model,...leaf};
+}
+export function latestUnifiedIndex(candles,horizon=126) {
+  return selectUnifiedHorizon(latestLongEntry(candles),horizon);
+}
+export function buildUnifiedTape(candles,horizon=126) {
+  horizon=Number(horizon);
+  if(!isHorizon(horizon))return null;
+  const tape=buildLongEntryTape(candles);
+  return {...tape,...tape.horizons[horizon],horizon,latest:selectUnifiedHorizon(tape.latest,horizon)};
 }
 
-export function buildUnifiedTape(candles) {
-  const {strengths, zones, atrPcts, latest} = buildBottomStrengthTape(candles);
-  const scores = new Array(zones.length).fill(null);
-  const green = new Array(zones.length).fill(null);
-  for (let i = 0; i < zones.length; i++) {
-    if (zones[i] === null) continue;
-    const calibration = zones[i] ? calibrateBottomStrength(strengths[i], candles[i][0], 'pooled', atrPcts[i]) : structural;
-    scores[i] = calibration.probability;
-    green[i] = calibration.greenEligible;
-  }
-  return {version: UNIFIED_VERSION, scores, green, rawStrengths: strengths, zones, latest: resultFromRaw(latest)};
+function validCeiling(h,phase,ceiling){
+  if(phase==='response')return ceiling===100;
+  if(phase==='search')return ceiling===79;
+  if(phase==='decline')return bounded(ceiling,h===252?54:48,h===252?68:62);
+  return bounded(ceiling,12,32)||bounded(ceiling,h===252?48:40,h===252?64:56);
 }
 
-const packetType = 2;
-const fieldCount = BOTTOM_PARTS.length;
-const inputOffset = 4 + 2 * fieldCount;
-
-export function encodeUnifiedResult(result) {
-  if (result?.version !== UNIFIED_VERSION || !Number.isInteger(result.score) ||
-      result.score !== result.probability || typeof result.zone !== 'boolean' ||
-      result.components?.length !== fieldCount || !result.inputs) return null;
-  const factors = [], points = [];
-  for (const [j, [key, , weight]] of BOTTOM_PARTS.entries()) {
-    const part = result.components[j];
-    if (part?.key !== key || part.weight !== weight || !Number.isFinite(part.score) || !Number.isFinite(part.points)) return null;
-    factors.push(Math.round(part.score * 1000));
-    points.push(Math.round(part.points * 1000));
+function decodePacket(packet,date,h) {
+  if(!Array.isArray(packet)||packet.length!==11+fields.length||packet[0]!==3||!validDate(date)||
+      !isHorizon(packet[1])||(h!==undefined&&Number(h)!==packet[1]))return null;
+  for(const x of packet)if(!Number.isSafeInteger(x))return null;
+  const [,horizon,score,phaseCode,ceiling,raw,percent]=packet,phase=ENTRY_PHASES[phaseCode];
+  if(!phase||!bounded(score,0,100)||!bounded(raw,0,1000)||!bounded(percent,0,10000)||!validCeiling(horizon,phase,ceiling))return null;
+  const values=packet.slice(7,11).map(x=>x/10);
+  if(values.some(x=>!bounded(x,0,100)))return null;
+  const inputs={};
+  for(const [i,name] of fields.entries()){
+    const value=packet[11+i]/100;
+    if(!bounded(value,...limits[name])||(name==='newLowDays20'&&!Number.isInteger(value)))return null;
+    inputs[name]=value;
   }
-  if (!BOTTOM_INPUTS.every(([key]) => Number.isFinite(result.inputs[key]))) return null;
-  const inputs = BOTTOM_INPUTS.map(([key, scale]) => Math.round(result.inputs[key] * scale));
-  const packet = [packetType, result.score, result.rawStrength, Number(result.zone), ...factors, ...points, ...inputs];
-  return decodeUnifiedResult(packet, result.date) ? packet : null;
+  if(horizon===252&&inputs.drawdownPct!==inputs.drawdown252Pct)return null;
+  const leaf=makeEntryLeaf(date,horizon,phase,ceiling,values,percent/100,inputs);
+  return leaf.score===score&&Math.round(leaf.rawStrength*10)===raw?leaf:null;
+}
+export function decodeUnifiedResult(input,date,horizon) {
+  if(Array.isArray(input))return decodePacket(input,date,horizon);
+  if(!input||typeof input!=='object')return null;
+  const half=decodePacket(input[126],date,126),year=decodePacket(input[252],date,252);
+  if(!half||!year||COMMON_FIELDS.some(key=>half.inputs[key]!==year.inputs[key]))return null;
+  return selectUnifiedHorizon({...half,horizons:{126:half,252:year}},horizon??126);
 }
 
-export function decodeUnifiedResult(packet, date) {
-  if (!Array.isArray(packet) || packet.length !== inputOffset + BOTTOM_INPUTS.length || packet[0] !== packetType ||
-      packet[1] < 0 || packet[1] > 100 || packet[2] < 0 || packet[2] > 100 ||
-      (packet[3] !== 0 && packet[3] !== 1) || typeof date !== 'string' || !/^\d{4}-\d\d-\d\d$/.test(date)) return null;
-  for (const value of packet) if (!Number.isSafeInteger(value)) return null;
-  const time = Date.parse(date + 'T00:00:00Z');
-  if (!Number.isFinite(time) || new Date(time).toISOString().slice(0, 10) !== date) return null;
-  const values = [], points = [];
-  for (const [j, [, , weight]] of BOTTOM_PARTS.entries()) {
-    const raw = packet[4+j], weighted = packet[4+fieldCount+j];
-    if (raw < 0 || raw > 100000 || weighted < 0 || weighted > weight * 1000 ||
-        Math.abs(weighted * 100 - raw * weight) > 50 + weight / 2) return null;
-    values.push(raw / 1000);
-    points.push(weighted / 1000);
+function pack(model,horizon){
+  const m=selectUnifiedHorizon(model,horizon);
+  if(!m||!Array.isArray(m.components)||m.components.length!==4||!m.inputs)return null;
+  const values=[];
+  for(const [i,[key,,weight]] of ENTRY_PARTS.entries()){
+    const part=m.components[i];
+    if(part?.key!==key||part.weight!==weight||!Number.isFinite(part.score))return null;
+    values.push(Math.round(10*part.score));
   }
-  if (packet[2] !== Math.round(points.reduce((sum, p) => sum + p, 0))) return null;
-  const inputs = {};
-  for (const [j, [key, scale, min, max]] of BOTTOM_INPUTS.entries()) {
-    const value = packet[inputOffset+j] / scale;
-    if (value < min || value > max) return null;
-    inputs[key] = value;
-  }
-  const zone = Boolean(packet[3]);
-  // Published distances are rounded to four decimals. Values precisely on the
-  // displayed threshold can lie on either side at calculation precision.
-  const distanceLimit = Math.min(1,8 / inputs.atr14Pct);
-  if (zone && (inputs.low20DistanceAtr > distanceLimit + .0001 || inputs.peak63DistanceAtr < 2)) return null;
-  if (!zone && inputs.low20DistanceAtr < distanceLimit - .0001 && inputs.peak63DistanceAtr > 2) return null;
-  const model = resultFromRaw({date, rawStrength: packet[2], zone, components: bottomComponents(values, points, inputs), inputs});
-  return model.score === packet[1] ? model : null;
+  if(!fields.every(key=>Number.isFinite(m.inputs[key])))return null;
+  const packet=[3,m.horizon,m.score,ENTRY_PHASES.indexOf(m.phase),m.ceiling,Math.round(10*m.rawStrength),
+    Math.round(100*m.percentile),...values,...fields.map(key=>Math.round(100*m.inputs[key]))];
+  const recovered=decodePacket(packet,m.date,horizon);
+  return recovered&&recovered.uncappedScore===m.uncappedScore&&recovered.entryQualified===m.entryQualified?packet:null;
+}
+export function encodeUnifiedResult(model,horizon) {
+  if(horizon!==undefined)return pack(model,Number(horizon));
+  const half=pack(model,126),year=pack(model,252);
+  return half&&year?{126:half,252:year}:null;
 }

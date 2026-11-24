@@ -10,7 +10,7 @@ on:
         type: boolean
         default: false
       migrate_unified:
-        description: Rebuild and publish the reviewed bottom-probability model on the pinned trading day
+        description: Rebuild both reviewed long-term entry indices on the pinned trading day
         type: boolean
         default: false
       expected_content_sha256:

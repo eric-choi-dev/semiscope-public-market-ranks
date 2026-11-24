@@ -10,11 +10,8 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
 import {setTimeout as pause} from 'node:timers/promises';
-import {buildAccumulation,buildFactorTape,ACCUMULATION_VERSION,ACCUMULATION_WEIGHTS} from '../src/accumulation.mjs';
-import {BOTTOM_TIMING_VERSION,BOTTOM_TIMING_WEIGHTS,latestBottomTiming} from '../src/bottom-timing.mjs';
-import {UNIFIED_VERSION,UNIFIED_MIN_BARS,latestUnifiedIndex,encodeUnifiedResult} from '../src/unified-index.mjs';
-import {BOTTOM_TARGET_ID,CALIBRATION,CALIBRATION_VERSION} from '../src/bottom-calibration.mjs';
-import {assessListing,assessUnifiedListing} from '../src/unified-eligibility.mjs';
+import {UNIFIED_VERSION,UNIFIED_MIN_BARS,latestUnifiedIndex,encodeUnifiedResult,selectUnifiedHorizon} from '../src/unified-index.mjs';
+import {assessUnifiedListing} from '../src/unified-eligibility.mjs';
 
 const {values:args}=parseArgs({options:{
   dolt:{type:'string'},cache:{type:'string'},db:{type:'string'},'data-dir':{type:'string'},
@@ -28,15 +25,13 @@ const dir=path.resolve(args['data-dir']??path.join(root,'public','data'));
 const cache=path.resolve(args.cache??path.join(root,'.rank-cache')),db=path.resolve(args.db??path.join(cache,'stockdb'));
 const binary=args.dolt && /[\\/]/.test(args.dolt)?path.resolve(args.dolt):(args.dolt??'dolt');
 const sourceRepo='post-no-preference/stocks';
-const buildVersion='rank-market-4.0';
+const buildVersion='rank-market-5.0';
+const horizons=[126,252];
 const reasonLabels={unsupported_structure:'모델 대상 외 증권 유형',no_source:'가격 자료 없음',not_current:'기준일 체결 자료 없음',
-  short_history:'확정 거래일 504개 미만',invalid_history:'종가·OHLC 품질 확인 필요',uncertain_action:'분할 또는 가격 단절 확인 필요',
-  halted:'장기 거래 공백 이후 이력 부족',benchmark_unavailable:'기준시장 이력 부족'};
-const unifiedReasonLabels={...reasonLabels,short_history:'확정 거래일 252개 미만',
-  insufficient_calibration:'비슷한 과거 저점에서 40거래일 결과가 확정된 표본 부족',
-  inactive_or_discontinuous:'최근 63거래일의 가격 변화 또는 거래 연속성 부족'};
-delete unifiedReasonLabels.benchmark_unavailable;
-const lookback=1008; // 252 high observations + up to 756 preceding drawdown observations.
+  short_history:'지수 계산에 필요한 확정 거래일 부족',invalid_history:'종가·OHLC 품질 확인 필요',uncertain_action:'분할 또는 가격 단절 확인 필요',
+  halted:'장기 거래 공백 이후 이력 부족',
+  inactive_or_discontinuous:'확인된 가격 변화 또는 거래 연속성 부족'};
+const archiveLookback=1008;
 const shardCount=48;
 const datePattern=/^\d{4}-\d{2}-\d{2}$/;
 const sha=string=>createHash('sha256').update(string).digest('hex');
@@ -121,7 +116,7 @@ function validBar(c) {
   return datePattern.test(date) && [o,h,l,x].every(v=>Number.isFinite(v)&&v>0) &&
     h>=Math.max(o,l,x) && l<=Math.min(o,x) && Number.isFinite(v) && v>=0;
 }
-function adjusted(symbol,raw,maxSessions=lookback,minimumSessions=504) {
+function adjusted(symbol,raw,maxSessions=archiveLookback,minimumSessions=504) {
   if(!raw?.length)return {reason:'no_source'};
   if(raw.at(-1)[0]!==asOf || !(raw.at(-1)[5]>0))return {reason:'not_current'};
   const bars=[];
@@ -162,48 +157,58 @@ function adjusted(symbol,raw,maxSessions=lookback,minimumSessions=504) {
   }
   return {ticker:symbol,asOf,candles:adjustedBars,availableSessions:bars.length};
 }
-function evaluate(listing,raw,refs) {
-  const symbol=listing.symbol,asset=adjusted(symbol,raw);
-  if(asset.reason)return {symbol,reason:asset.reason};
-  const reference=assessListing(listing).reference;
-  const set={...refs,[symbol]:asset};
-  const tape=buildFactorTape(set,symbol,{referenceTicker:reference});
-  if(!tape)return {symbol,reason:'benchmark_unavailable'};
-  const model=buildAccumulation(set,symbol,{referenceTicker:reference,factorTape:tape});
-  if(!model)return {symbol,reason:'benchmark_unavailable'};
-  const {252:one,504:two}=model.horizons;
-  return {symbol,providerSymbol:listing.providerSymbol??symbol,name:listing.name,exchange:listing.exchange,
-    type:listing.type,reference,asOf,nBars:asset.candles.length,score252:one.score,score504:two.score,
-    factors:one.components.map(c=>c.score),inputs:model.inputs,timing:latestBottomTiming(tape)};
-}
-function assignRank(rows,horizon) {
-  const score='score'+horizon,rank='rank'+horizon;
-  rows.sort((a,b)=>b[score]-a[score] || a.symbol.localeCompare(b.symbol,'en'));
-  for(let i=0;i<rows.length;i++)rows[i][rank]=i && rows[i][score]===rows[i-1][score]?rows[i-1][rank]:i+1;
-}
-
-function unifiedEvaluation(listing,raw) {
-  // The unified rubric uses exactly the final 252 prices. Corporate actions
-  // before its input window cannot change a current quote or its eligibility.
-  const asset=adjusted(listing.symbol,raw,UNIFIED_MIN_BARS,UNIFIED_MIN_BARS);
-  if(asset.reason)return {reason:asset.reason};
-  const result=latestUnifiedIndex(asset.candles);
-  if(!result)return {reason:'inactive_or_discontinuous'};
-  if(result.score===null)return {reason:'insufficient_calibration'};
-  if(result.version!==UNIFIED_VERSION||!Number.isInteger(result.score)||result.score<0||result.score>100)
-    throw Error('Unexpected bottom probability for '+listing.symbol);
-  const packet=encodeUnifiedResult(result);
-  if(!packet)throw Error('Unable to represent the verified unified score for '+listing.symbol);
-  return {score:result.score,nBars:asset.availableSessions,packet};
-}
-
-function addUnifiedRanks(rows) {
-  const order=[...rows].sort((a,b)=>b.score-a.score || a.row.symbol.localeCompare(b.row.symbol,'en'));
-  let rank=0;
-  for(const [i,item] of order.entries()) {
-    if(!i || order[i-1].score!==item.score)rank=i+1;
-    item.row.unifiedRank=rank;
+function evaluate(listing,raw) {
+  const symbol=listing.symbol;
+  let input=adjusted(symbol,raw,UNIFIED_MIN_BARS+1,UNIFIED_MIN_BARS);
+  // Keep the verifiable minimum suffix if only the optional preceding
+  // transition is invalid or has an unresolved corporate action.
+  if(input.reason==='invalid_history'||input.reason==='uncertain_action')
+    input=adjusted(symbol,raw,UNIFIED_MIN_BARS,UNIFIED_MIN_BARS);
+  if(input.reason)return {symbol,reason:input.reason};
+  const model=latestUnifiedIndex(input.candles);
+  if(!model)return {symbol,reason:'inactive_or_discontinuous'};
+  if(model.version!==UNIFIED_VERSION||model.date!==asOf)throw Error('Mismatched model version or date for '+symbol);
+  const row={symbol,providerSymbol:listing.providerSymbol??symbol,name:listing.name,exchange:listing.exchange,
+    type:listing.type,asOf,nBars:input.candles.length,indices:{126:null,252:null},ranks:{126:null,252:null}};
+  const scores={};
+  for(const horizon of horizons) {
+    const selected=selectUnifiedHorizon(model,horizon);
+    if(!selected||selected.score==null)throw Error('Incomplete 126/252-session result for '+symbol);
+    const packet=encodeUnifiedResult(model,horizon);
+    if(!Array.isArray(packet)||!Number.isInteger(selected.score)||selected.score<0||selected.score>100)
+      throw Error('Unrepresentable '+horizon+'-session result for '+symbol);
+    row.indices[horizon]=packet;scores[horizon]=selected.score;
   }
+  return {symbol,row,scores};
+}
+
+function rankHorizon(entries,horizon,excluded) {
+  const order=entries.filter(entry=>Number.isInteger(entry.scores[horizon]))
+    .sort((a,b)=>b.scores[horizon]-a.scores[horizon]||a.symbol.localeCompare(b.symbol,'en'));
+  let rank=0,atLeast80=0;
+  for(const [i,entry] of order.entries()) {
+    const score=entry.scores[horizon];
+    if(i===0||score!==order[i-1].scores[horizon])rank=i+1;
+    entry.row.ranks[horizon]=rank;
+    if(score>=80)atLeast80++;
+  }
+  return {scored:order.length,atLeast80,excluded};
+}
+
+async function modelDigest() {
+  const files=new Map();
+  async function readModule(url) {
+    const name=path.relative(root,fileURLToPath(url)).split(path.sep).join('/');
+    if(files.has(name))return;
+    const code=(await readFile(url,'utf8')).replaceAll('\r\n','\n');
+    files.set(name,code);
+    if(name.endsWith('.json'))return;
+    for(const match of code.matchAll(/\bfrom\s*['"](\.{1,2}\/[^'"]+\.(?:mjs|js|json))['"]/g))
+      await readModule(new URL(match[1],url));
+  }
+  await readModule(new URL('../src/unified-index.mjs',import.meta.url));
+  await readModule(new URL('../src/unified-eligibility.mjs',import.meta.url));
+  return sha(JSON.stringify([...files].sort(([a],[b])=>a.localeCompare(b,'en'))));
 }
 
 // Auditors can recreate the historical inputs for the fixed, currently ranked
@@ -212,9 +217,10 @@ async function exportPrivateBars(destination) {
   const target=path.resolve(destination), inside=path.relative(root,target);
   if(!inside.startsWith('..'+path.sep) && !path.isAbsolute(inside))throw Error('Private bar export must be outside the project.');
   const baseline=JSON.parse(await readFile(path.join(dir,'long-ranks.json'),'utf8'));
-  if(baseline.asOf!==asOf || baseline.source.commit!==commit || baseline.coverage.scored!==baseline.rows.length)
+  if(baseline.asOf!==asOf || baseline.source.commit!==commit || !Array.isArray(baseline.rows) ||
+     (baseline.schemaVersion===1 && baseline.coverage.scored!==baseline.rows.length))
     throw Error('Public cohort does not match the pinned date and source revision.');
-  const cohort=new Map(baseline.rows.map(row=>[row.symbol,row.reference]));
+  const cohort=new Map(baseline.rows.map(row=>[row.symbol,row.reference??'SPY']));
   for(const ticker of [...cohort.values(),'SPY'])if(!cohort.has(ticker))cohort.set(ticker,'SPY');
   await mkdir(path.dirname(target),{recursive:true});
   const temporary=target+'.tmp-'+process.pid,output=createWriteStream(temporary),digest=createHash('sha256');
@@ -284,101 +290,64 @@ const barCache=path.join(cache,asOf+'-'+commit+'-'+extractionKey);
 await mkdir(barCache,{recursive:true});
 await partition();
 if(args['prepare-bars'])process.exit(0);
-const candidates=catalog.items.filter(l=>assessListing(l).reference);
-const legacyEligible=new Set(candidates.map(l=>l.symbol));
-const unifiedEligible=new Set(catalog.items.filter(l=>assessUnifiedListing(l).eligible).map(l=>l.symbol));
-const wanted=new Map(catalog.items.filter(l=>legacyEligible.has(l.symbol)||unifiedEligible.has(l.symbol)).map(l=>[l.symbol,l]));
+const wanted=new Map(catalog.items.filter(l=>assessUnifiedListing(l).eligible).map(l=>[l.symbol,l]));
 const groups=Array.from({length:shardCount},()=>[]);
-for(const l of wanted.values())groups[shard(l.symbol)].push(l);
-const defs=await Promise.all(['../src/accumulation.mjs','../src/bottom-timing.mjs',
-  '../src/unified-index.mjs','../src/bottom-strength.mjs','../src/bottom-calibration.mjs','../src/bottom-calibration-data.json',
-  '../src/unified-eligibility.mjs','../src/cef-registry.mjs','../src/bdc-registry.mjs',
-  './rank-market.mjs'].map(rel=>readFile(new URL(rel,import.meta.url))));
-const configHash=sha([catalog.asOf,JSON.stringify(catalog.items),...defs].join('\n')).slice(0,14);
+for(const listing of wanted.values())groups[shard(listing.symbol)].push(listing);
+const modelSourceSha256=await modelDigest();
+const configHash=sha([catalog.asOf,JSON.stringify(catalog.items),modelSourceSha256,
+  await readFile(new URL('./rank-market.mjs',import.meta.url),'utf8')].join('\n')).slice(0,14);
 const job=path.join(cache,asOf+'-'+commit+'-'+configHash);
 await mkdir(job,{recursive:true});
-// Fetch once locally, with commit-keyed partitions. Neither API requests per
-// symbol nor exchange credentials are required. Later re-runs only Dolt-pull
-// changed database chunks; a new commit causes a fresh split/action scan.
 const splits=new Map();
 await streamQuery("SELECT act_symbol,ex_date,to_factor,for_factor FROM split AS OF '"+commit+"' WHERE ex_date <= '"+asOf+"' ORDER BY act_symbol,ex_date",line=>{
   const [symbol,date,to,from]=line.split(',');
-  if(!wanted.has(symbol))return;
+  if(!wanted.has(symbol)&&!args['export-private-bars'])return;
   const a=splits.get(symbol)??[];a.push({date,ratio:Number(to)/Number(from)});splits.set(symbol,a);
 });
 const actionThrough=await scalar("SELECT MAX(ex_date) AS latest FROM split AS OF '"+commit+"' WHERE ex_date <= '"+asOf+"'");
-const refSymbols=new Set(['SPY',...candidates.map(l=>assessListing(l).reference)]);
-const rawRefs=new Map();
-for(const id of new Set([...refSymbols].map(shard)))for(const [k,v] of await loadShard(id,refSymbols))rawRefs.set(k,v);
-const spy=rawRefs.get('SPY')??[];
+const spy=(await loadShard(shard('SPY'),new Set(['SPY']))).get('SPY')??[];
 if(spy.length<504 || spy.at(-1)[0]!==asOf || !(spy.at(-1)[5]>0))throw Error('SPY trading calendar unavailable for cutoff');
 const calendar=new Map(spy.filter(c=>c[5]>0).map((c,i)=>[c[0],i]));
 if(args['export-private-bars']) {
   await exportPrivateBars(args['export-private-bars']);
   process.exit(0);
 }
-const vintage=CALIBRATION.vintages.findLast(v=>v.date<=asOf);
-if(CALIBRATION.targetId!==BOTTOM_TARGET_ID||CALIBRATION.calibrationVersion!==CALIBRATION_VERSION||!vintage?.bins?.length||
-   !datePattern.test(vintage.through)||vintage.through>=asOf)throw Error('No mature bottom calibration for this ranking date');
-const unifiedCalibration={version:CALIBRATION_VERSION,sha256:sha(JSON.stringify(CALIBRATION)),
-  vintage:vintage.date,outcomesThrough:vintage.through};
-const refs={};
-for(const [key,bars] of rawRefs){const ref=adjusted(key,bars);if(!ref.reason)refs[key]=ref;}
-if(!refs.SPY)throw Error('Benchmark price integrity could not be verified');
-const rows=[],excludedBySymbol={},excluded=zeroCounts();
-const unifiedOnlyRows=[],unifiedRanked=[],unifiedExcludedBySymbol={};
-const unifiedExcluded=Object.fromEntries(Object.keys(unifiedReasonLabels).map(key=>[key,0]));
-excluded.unsupported_structure=catalog.count-candidates.length;
-unifiedExcluded.unsupported_structure=catalog.count-unifiedEligible.size;
+const entries=[],excludedBySymbol={};
+const exclusions=Object.fromEntries(horizons.map(h=>[h,zeroCounts()]));
+for(const h of horizons)exclusions[h].unsupported_structure=catalog.count-wanted.size;
 for(let id=0;id<shardCount;id++) {
   const part=path.join(job,'scores-'+String(id).padStart(2,'0')+'.json');
   let values;
   if(existsSync(part))values=JSON.parse(await readFile(part,'utf8'));
   else {
     const bars=await loadShard(id,wanted);
-    values=groups[id].map(listing=>{
-      const symbol=listing.symbol,raw=bars.get(symbol);
-      const legacy=legacyEligible.has(symbol)?evaluate(listing,raw,refs):null;
-      const unified=unifiedEligible.has(symbol)?unifiedEvaluation(listing,raw):null;
-      return {symbol,legacy,unified};
-    });
+    values=groups[id].map(listing=>evaluate(listing,bars.get(listing.symbol)));
     await atomic(part,JSON.stringify(values));
   }
-  for(const {symbol,legacy,unified} of values) {
-    let row=null;
-    if(legacy?.reason){excluded[legacy.reason]++;excludedBySymbol[symbol]=legacy.reason;}
-    else if(legacy){row=legacy;row.unified=null;row.unifiedRank=null;rows.push(row);}
-    if(unified?.reason){unifiedExcluded[unified.reason]++;unifiedExcludedBySymbol[symbol]=unified.reason;}
-    else if(unified){
-      if(!row){
-        const listing=wanted.get(symbol);
-        row={symbol,providerSymbol:listing.providerSymbol??symbol,name:listing.name,exchange:listing.exchange,
-          type:listing.type,asOf,nBars:unified.nBars};
-        unifiedOnlyRows.push(row);
+  for(const item of values) {
+    const {symbol}=item;
+    for(const horizon of horizons) {
+      const reason=item.reason;
+      if(reason) {
+        exclusions[horizon][reason]++;
+        (excludedBySymbol[symbol]??={})[horizon]=reason;
       }
-      row.unified=unified.packet;
-      unifiedRanked.push({row,score:unified.score});
     }
+    if(item.row&&horizons.some(h=>Number.isInteger(item.scores[h])))entries.push(item);
   }
-  if((id+1)%8===0)console.log('Evaluated shards',id+1,'/',shardCount,'· scores',rows.length);
+  if((id+1)%8===0)console.log('Evaluated shards',id+1,'/',shardCount,'· scored symbols',entries.length);
 }
-assignRank(rows,504);assignRank(rows,252);
-addUnifiedRanks(unifiedRanked);
-unifiedOnlyRows.sort((a,b)=>a.unifiedRank-b.unifiedRank||a.symbol.localeCompare(b.symbol,'en'));
+const byHorizon=Object.fromEntries(horizons.map(h=>[h,rankHorizon(entries,h,exclusions[h])]));
+for(const h of horizons) {
+  if(byHorizon[h].scored<1||byHorizon[h].scored+Object.values(exclusions[h]).reduce((sum,n)=>sum+n,0)!==catalog.count)
+    throw Error('Unreconciled or empty '+h+'-session cohort');
+}
+const rows=entries.map(x=>x.row).sort((a,b)=>a.symbol.localeCompare(b.symbol,'en'));
 const source={name:'DoltHub · post-no-preference/stocks',url:'https://www.dolthub.com/repositories/post-no-preference/stocks',
   license:'CC BY-SA 4.0',licenseUrl:'https://creativecommons.org/licenses/by-sa/4.0/',commit,actionThrough,
-  changeNotice:'Semiscope가 분할 조정 일봉으로 확인된 저점·반등 조건의 확률과 종목 순위를 계산했습니다. 가공한 순위 데이터에도 CC BY-SA 4.0을 적용합니다.'};
-const output={schemaVersion:1,modelVersion:ACCUMULATION_VERSION,buildVersion,asOf,generatedAt:new Date().toISOString(),
-  source,listingSource:catalog.source,weights:ACCUMULATION_WEIGHTS,minimumSessions:504,maximumSessions:lookback,
-  coverage:{listed:catalog.count,eligible:candidates.length,scored:rows.length,excluded},reasonLabels,excludedBySymbol,rows,
-  timingModelVersion:BOTTOM_TIMING_VERSION,timingWeights:BOTTOM_TIMING_WEIGHTS,
-  timingCoverage:{scored:rows.filter(row=>row.timing?.date===asOf).length,eligible:rows.length},
-  unifiedModelVersion:UNIFIED_VERSION,unifiedMinimumSessions:UNIFIED_MIN_BARS,unifiedTargetId:BOTTOM_TARGET_ID,unifiedCalibration,
-  unifiedCoverage:{listed:catalog.count,eligible:unifiedEligible.size,scored:unifiedRanked.length,excluded:unifiedExcluded},
-  unifiedOnlyRows,unifiedExcludedBySymbol,unifiedReasonLabels};
-if(rows.length+Object.values(excluded).reduce((a,b)=>a+b,0)!==catalog.count || !rows.length)
-  throw Error('Rank population reconciliation failed');
-if(!unifiedRanked.length || unifiedRanked.length+Object.values(unifiedExcluded).reduce((a,b)=>a+b,0)!==catalog.count)
-  throw Error('Unified rank population reconciliation failed');
+  changeNotice:'Semiscope가 분할 조정 일봉으로 126거래일 및 252거래일 장기 진입 지수와 기간별 순위를 계산했습니다. 가공 지수와 순위 자료에도 CC BY-SA 4.0을 적용합니다.'};
+const output={schemaVersion:2,modelVersion:UNIFIED_VERSION,buildVersion,asOf,generatedAt:new Date().toISOString(),
+  horizons,minimumSessions:UNIFIED_MIN_BARS,modelSourceSha256,source,listingSource:catalog.source,
+  coverage:{listed:catalog.count,eligible:wanted.size,byHorizon},reasonLabels,excludedBySymbol,rows};
 await atomic(path.join(dir,'long-ranks.json'),JSON.stringify(output));
-console.log('Verified ranking snapshot written.',asOf,'legacy',JSON.stringify(output.coverage),'unified',JSON.stringify(output.unifiedCoverage));
+console.log('Verified long-term index rankings written.',asOf,JSON.stringify(output.coverage));
