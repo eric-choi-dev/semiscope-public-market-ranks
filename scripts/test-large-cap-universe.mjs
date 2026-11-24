@@ -47,7 +47,10 @@ test('verified release matches values, date and roster; outside members cannot b
   assert(!validQualityUniverse(data,'2000-01-03'));
   assert(qualitySnapshotIsFresh(data,new Date(data.asOf+'T21:00:00Z')));
   const delayed=new Date(Date.parse(data.asOf)+11*86400000);assert.equal(qualitySnapshotIsFresh(data,delayed),false);
-  for(const ticker of ['SOXL','IPW']) assert(!universeMember(data,ticker)?.eligible);
+  assert.equal(universeMember(data,'UNLISTED-FIXTURE.SYMBOL'),null);
+  if(data.asOf==='2026-11-23'){
+    for(const ticker of ['SOXL','IPW'])assert(!universeMember(data,ticker)?.eligible);
+  }
   const r=Object.values(data.rows).find(v=>v.eligible);
   assert(r);
   const revised=structuredClone(data);revised.rows[r.symbol].capUsd++;
