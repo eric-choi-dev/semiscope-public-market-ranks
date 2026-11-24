@@ -1,6 +1,6 @@
 {
-  "state": "published",
-  "checkedAt": "2026-11-24T16:18:36.097Z",
+  "state": "retained-price-source-behind",
+  "checkedAt": "2026-11-24T16:27:26.820Z",
   "asOf": "2026-11-23",
   "version": "v5",
   "sha256": "f06cfa712d054a0c2a7061adcb5fe0cc9152b34273e6c1bb7056221241e04b2e",
@@ -20,6 +20,9 @@
     }
   },
   "sourceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
+  "observedDirectoryDate": "2026-11-24",
+  "availablePriceDate": "2026-11-23",
+  "availablePriceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
   "unifiedCoverage": {
     "listed": 13277,
     "eligible": 5297,
