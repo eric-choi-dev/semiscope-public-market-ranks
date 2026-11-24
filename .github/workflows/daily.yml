@@ -9,10 +9,14 @@ on:
         description: Rebuild the current market day and verify its public release
         type: boolean
         default: false
-      migrate_timing_v2:
-        description: Publish the verified additive bottom-timing release against its pinned baseline
+      migrate_unified:
+        description: Reproduce and publish the reviewed unified index on its original trading day
         type: boolean
         default: false
+      expected_content_sha256:
+        description: Content digest printed by the independent unified candidate review
+        type: string
+        required: false
 
 concurrency:
   group: public-rank-publication
@@ -55,12 +59,13 @@ jobs:
         env:
           RANK_PUBLISH_TOKEN: ${{ secrets.RANK_PUBLISH_TOKEN }}
           VERIFY_CURRENT: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_current }}
-          MIGRATE_TIMING: ${{ github.event_name == 'workflow_dispatch' && inputs.migrate_timing_v2 }}
+          MIGRATE_UNIFIED: ${{ github.event_name == 'workflow_dispatch' && inputs.migrate_unified }}
+          EXPECTED_CONTENT_SHA256: ${{ inputs.expected_content_sha256 }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$MIGRATE_TIMING" = "true" ]; then
-            node scripts/refresh-cloud-ranks.mjs --migrate-timing-v2
+          if [ "$MIGRATE_UNIFIED" = "true" ]; then
+            node scripts/refresh-cloud-ranks.mjs --migrate-unified --expected-content-sha256 "$EXPECTED_CONTENT_SHA256"
           elif [ "$VERIFY_CURRENT" = "true" ]; then
             node scripts/refresh-cloud-ranks.mjs --verify-current
           else
@@ -75,6 +80,7 @@ jobs:
           test -s last-run.json
           # gh supplies its ephemeral token through its credential helper only during push.
           git add -- last-run.json
+          if [ -f last-directory.json.gz ]; then git add -- last-directory.json.gz; fi
           if git diff --staged --quiet --; then exit 0; fi
           git -c user.name=Semiscope -c user.email=semiscope@users.noreply.github.com commit -m 'Record verified public market ranks'
           git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' push origin HEAD:main

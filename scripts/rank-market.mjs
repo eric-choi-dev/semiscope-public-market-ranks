@@ -10,14 +10,15 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
 import {setTimeout as pause} from 'node:timers/promises';
-import {assessListing} from '../src/explorer-model.mjs';
 import {buildAccumulation,buildFactorTape,ACCUMULATION_VERSION,ACCUMULATION_WEIGHTS} from '../src/accumulation.mjs';
 import {BOTTOM_TIMING_VERSION,BOTTOM_TIMING_WEIGHTS,latestBottomTiming} from '../src/bottom-timing.mjs';
+import {UNIFIED_VERSION,UNIFIED_MIN_BARS,latestUnifiedIndex,encodeUnifiedResult} from '../src/unified-index.mjs';
+import {assessListing,assessUnifiedListing} from '../src/unified-eligibility.mjs';
 
 const {values:args}=parseArgs({options:{
   dolt:{type:'string'},cache:{type:'string'},db:{type:'string'},'data-dir':{type:'string'},
   'as-of':{type:'string'},revision:{type:'string'},update:{type:'boolean',default:false},
-  'export-private-bars':{type:'string'}
+  'export-private-bars':{type:'string'},'prepare-bars':{type:'boolean'}
 }});
 if(args.revision!==undefined && !/^[0-9a-v]{32}$/.test(args.revision))
   throw Error('A pinned revision must be the full 32-character Dolt commit hash');
@@ -26,15 +27,18 @@ const dir=path.resolve(args['data-dir']??path.join(root,'public','data'));
 const cache=path.resolve(args.cache??path.join(root,'.rank-cache')),db=path.resolve(args.db??path.join(cache,'stockdb'));
 const binary=args.dolt && /[\\/]/.test(args.dolt)?path.resolve(args.dolt):(args.dolt??'dolt');
 const sourceRepo='post-no-preference/stocks';
-const buildVersion='rank-market-2.0';
+const buildVersion='rank-market-3.0';
 const reasonLabels={unsupported_structure:'모델 대상 외 증권 유형',no_source:'가격 자료 없음',not_current:'기준일 체결 자료 없음',
   short_history:'확정 거래일 504개 미만',invalid_history:'종가·OHLC 품질 확인 필요',uncertain_action:'분할 또는 가격 단절 확인 필요',
   halted:'장기 거래 공백 이후 이력 부족',benchmark_unavailable:'기준시장 이력 부족'};
+const unifiedReasonLabels={...reasonLabels,short_history:'확정 거래일 252개 미만',
+  inactive_or_discontinuous:'최근 63거래일의 가격 변화 또는 거래 연속성 부족'};
+delete unifiedReasonLabels.benchmark_unavailable;
 const lookback=1008; // 252 high observations + up to 756 preceding drawdown observations.
 const shardCount=48;
 const datePattern=/^\d{4}-\d{2}-\d{2}$/;
 const sha=string=>createHash('sha256').update(string).digest('hex');
-const fileAt=(stem,id,ext)=>path.join(job,stem+'-'+String(id).padStart(2,'0')+'.'+ext);
+const barFile=id=>path.join(barCache,'bars-'+String(id).padStart(2,'0')+'.csv');
 const zeroCounts=()=>Object.fromEntries(Object.keys(reasonLabels).map(k=>[k,0]));
 
 async function atomic(file,data) {
@@ -75,11 +79,11 @@ function shard(symbol) {
   return n%shardCount;
 }
 async function partition() {
-  const marker=path.join(job,'parts.done');
+  const marker=path.join(barCache,'parts.done');
   if(existsSync(marker))return;
   // Composite primary key (date, act_symbol) permits one local chronological
   // scan of the source, independent of the number of listings.
-  const temporary=Array.from({length:shardCount},(_,i)=>fileAt('bars',i,'csv')+'.tmp-'+process.pid);
+  const temporary=Array.from({length:shardCount},(_,i)=>barFile(i)+'.tmp-'+process.pid);
   const streams=temporary.map(file=>createWriteStream(file));
   const startDate=new Date(asOf+'T00:00:00Z');
   startDate.setUTCFullYear(startDate.getUTCFullYear()-5);
@@ -89,19 +93,19 @@ async function partition() {
   try{
     await streamQuery(sql,line=>{
       const symbol=line.slice(0,line.indexOf(','));
-      if(!wanted.has(symbol))return;
+      if(!listedSymbols.has(symbol))return;
       retained++;
       const file=streams[shard(symbol)];
       if(!file.write(line+'\n'))return once(file,'drain');
     });
     await Promise.all(streams.map(s=>new Promise((resolve,reject)=>{s.on('error',reject);s.end(resolve);})));
-    for(let i=0;i<temporary.length;i++)await rename(temporary[i],fileAt('bars',i,'csv'));
+    for(let i=0;i<temporary.length;i++)await rename(temporary[i],barFile(i));
     await atomic(marker,JSON.stringify({retained,start,asOf}));
     console.log('Source scan complete:',retained,'candidate bars');
   } catch(error){streams.forEach(s=>s.destroy());throw error;}
 }
 async function loadShard(id,only) {
-  const map=new Map(),lines=createInterface({input:createReadStream(fileAt('bars',id,'csv')),crlfDelay:Infinity});
+  const map=new Map(),lines=createInterface({input:createReadStream(barFile(id)),crlfDelay:Infinity});
   for await(const line of lines) {
     const [symbol,date,...s]=line.split(',');
     if(only && !only.has(symbol))continue;
@@ -115,7 +119,7 @@ function validBar(c) {
   return datePattern.test(date) && [o,h,l,x].every(v=>Number.isFinite(v)&&v>0) &&
     h>=Math.max(o,l,x) && l<=Math.min(o,x) && Number.isFinite(v) && v>=0;
 }
-function adjusted(symbol,raw,maxSessions=lookback) {
+function adjusted(symbol,raw,maxSessions=lookback,minimumSessions=504) {
   if(!raw?.length)return {reason:'no_source'};
   if(raw.at(-1)[0]!==asOf || !(raw.at(-1)[5]>0))return {reason:'not_current'};
   const bars=[];
@@ -128,7 +132,7 @@ function adjusted(symbol,raw,maxSessions=lookback) {
     if(priorSession>=0 && session-priorSession>10){bars.length=0;cutForGap=true;}
     priorSession=session;bars.push(c);
   }
-  if(bars.length<504)return {reason:cutForGap?'halted':'short_history'};
+  if(bars.length<minimumSessions)return {reason:cutForGap?'halted':'short_history'};
   const subset=bars.slice(-maxSessions);
   if(!subset.every(validBar))return {reason:'invalid_history'};
   const adjustedBars=new Array(subset.length);
@@ -154,7 +158,7 @@ function adjusted(symbol,raw,maxSessions=lookback) {
     if(adjustedOvernight>1.70 || adjustedOvernight<1/1.70)return {reason:'uncertain_action'};
     scale/=factor;
   }
-  return {ticker:symbol,asOf,candles:adjustedBars};
+  return {ticker:symbol,asOf,candles:adjustedBars,availableSessions:bars.length};
 }
 function evaluate(listing,raw,refs) {
   const symbol=listing.symbol,asset=adjusted(symbol,raw);
@@ -174,6 +178,27 @@ function assignRank(rows,horizon) {
   const score='score'+horizon,rank='rank'+horizon;
   rows.sort((a,b)=>b[score]-a[score] || a.symbol.localeCompare(b.symbol,'en'));
   for(let i=0;i<rows.length;i++)rows[i][rank]=i && rows[i][score]===rows[i-1][score]?rows[i-1][rank]:i+1;
+}
+
+function unifiedEvaluation(listing,raw) {
+  // The unified rubric uses exactly the final 252 prices. Corporate actions
+  // before its input window cannot change a current quote or its eligibility.
+  const asset=adjusted(listing.symbol,raw,UNIFIED_MIN_BARS,UNIFIED_MIN_BARS);
+  if(asset.reason)return {reason:asset.reason};
+  const result=latestUnifiedIndex(asset.candles);
+  if(!result)return {reason:'inactive_or_discontinuous'};
+  const packet=encodeUnifiedResult(result);
+  if(!packet)throw Error('Unable to represent the verified unified score for '+listing.symbol);
+  return {score:result.score,nBars:asset.availableSessions,packet};
+}
+
+function addUnifiedRanks(rows) {
+  const order=[...rows].sort((a,b)=>b.score-a.score || a.row.symbol.localeCompare(b.row.symbol,'en'));
+  let rank=0;
+  for(const [i,item] of order.entries()) {
+    if(!i || order[i-1].score!==item.score)rank=i+1;
+    item.row.unifiedRank=rank;
+  }
 }
 
 // Auditors can recreate the historical inputs for the fixed, currently ranked
@@ -236,17 +261,33 @@ const latest=await scalar("SELECT MAX(date) AS latest FROM ohlcv AS OF '"+commit
 const asOf=args['as-of']??latest;
 if(!datePattern.test(asOf)||asOf>latest)throw Error('No source close for requested date');
 const catalog=JSON.parse(await readFile(path.join(dir,'us-listings.json'),'utf8'));
+if (!args.revision && !args['as-of'] && datePattern.test(catalog.asOf) && latest<catalog.asOf) {
+  console.error('Published price history ends '+latest+'; the listing directory is dated '+catalog.asOf);
+  process.exit(75);
+}
 if(catalog.asOf!==asOf)throw Error('Listing date '+catalog.asOf+' differs from price date '+asOf);
 if(!catalog.items?.length || catalog.items.length!==catalog.count || new Set(catalog.items.map(l=>l.symbol)).size!==catalog.count)
   throw Error('Incomplete or ambiguous listing directory');
-const candidates=catalog.items.filter(l=>assessListing(l).reference),wanted=new Map(candidates.map(l=>[l.symbol,l]));
+// This private source cache depends only on the pinned price revision, cutoff,
+// extraction window, and listing identities. Model versions share the same scan.
+const listedSymbols=new Set(catalog.items.map(l=>l.symbol));
+const extractionKey=sha(JSON.stringify(['ohlcv-5y-v1',shardCount,[...listedSymbols].sort()])).slice(0,14);
+const barCache=path.join(cache,asOf+'-'+commit+'-'+extractionKey);
+await mkdir(barCache,{recursive:true});
+await partition();
+if(args['prepare-bars'])process.exit(0);
+const candidates=catalog.items.filter(l=>assessListing(l).reference);
+const legacyEligible=new Set(candidates.map(l=>l.symbol));
+const unifiedEligible=new Set(catalog.items.filter(l=>assessUnifiedListing(l).eligible).map(l=>l.symbol));
+const wanted=new Map(catalog.items.filter(l=>legacyEligible.has(l.symbol)||unifiedEligible.has(l.symbol)).map(l=>[l.symbol,l]));
 const groups=Array.from({length:shardCount},()=>[]);
-for(const l of candidates)groups[shard(l.symbol)].push(l);
-const defs=await Promise.all(['../src/accumulation.mjs','../src/bottom-timing.mjs','../src/explorer-model.mjs','./rank-market.mjs'].map(rel=>readFile(new URL(rel,import.meta.url))));
-const configHash=sha([catalog.asOf,JSON.stringify(candidates),...defs].join('\n')).slice(0,14);
+for(const l of wanted.values())groups[shard(l.symbol)].push(l);
+const defs=await Promise.all(['../src/accumulation.mjs','../src/bottom-timing.mjs',
+  '../src/unified-index.mjs','../src/unified-eligibility.mjs','../src/cef-registry.mjs','../src/bdc-registry.mjs',
+  './rank-market.mjs'].map(rel=>readFile(new URL(rel,import.meta.url))));
+const configHash=sha([catalog.asOf,JSON.stringify(catalog.items),...defs].join('\n')).slice(0,14);
 const job=path.join(cache,asOf+'-'+commit+'-'+configHash);
 await mkdir(job,{recursive:true});
-await partition();
 // Fetch once locally, with commit-keyed partitions. Neither API requests per
 // symbol nor exchange credentials are required. Later re-runs only Dolt-pull
 // changed database chunks; a new commit causes a fresh split/action scan.
@@ -271,23 +312,45 @@ const refs={};
 for(const [key,bars] of rawRefs){const ref=adjusted(key,bars);if(!ref.reason)refs[key]=ref;}
 if(!refs.SPY)throw Error('Benchmark price integrity could not be verified');
 const rows=[],excludedBySymbol={},excluded=zeroCounts();
+const unifiedOnlyRows=[],unifiedRanked=[],unifiedExcludedBySymbol={};
+const unifiedExcluded=Object.fromEntries(Object.keys(unifiedReasonLabels).map(key=>[key,0]));
 excluded.unsupported_structure=catalog.count-candidates.length;
+unifiedExcluded.unsupported_structure=catalog.count-unifiedEligible.size;
 for(let id=0;id<shardCount;id++) {
-  const part=fileAt('scores',id,'json');
+  const part=path.join(job,'scores-'+String(id).padStart(2,'0')+'.json');
   let values;
   if(existsSync(part))values=JSON.parse(await readFile(part,'utf8'));
   else {
-    const bars=await loadShard(id);
-    values=groups[id].map(l=>evaluate(l,bars.get(l.symbol),refs));
+    const bars=await loadShard(id,wanted);
+    values=groups[id].map(listing=>{
+      const symbol=listing.symbol,raw=bars.get(symbol);
+      const legacy=legacyEligible.has(symbol)?evaluate(listing,raw,refs):null;
+      const unified=unifiedEligible.has(symbol)?unifiedEvaluation(listing,raw):null;
+      return {symbol,legacy,unified};
+    });
     await atomic(part,JSON.stringify(values));
   }
-  for(const value of values) {
-    if(value.reason){excluded[value.reason]++;excludedBySymbol[value.symbol]=value.reason;}
-    else rows.push(value);
+  for(const {symbol,legacy,unified} of values) {
+    let row=null;
+    if(legacy?.reason){excluded[legacy.reason]++;excludedBySymbol[symbol]=legacy.reason;}
+    else if(legacy){row=legacy;row.unified=null;row.unifiedRank=null;rows.push(row);}
+    if(unified?.reason){unifiedExcluded[unified.reason]++;unifiedExcludedBySymbol[symbol]=unified.reason;}
+    else if(unified){
+      if(!row){
+        const listing=wanted.get(symbol);
+        row={symbol,providerSymbol:listing.providerSymbol??symbol,name:listing.name,exchange:listing.exchange,
+          type:listing.type,asOf,nBars:unified.nBars};
+        unifiedOnlyRows.push(row);
+      }
+      row.unified=unified.packet;
+      unifiedRanked.push({row,score:unified.score});
+    }
   }
   if((id+1)%8===0)console.log('Evaluated shards',id+1,'/',shardCount,'· scores',rows.length);
 }
 assignRank(rows,504);assignRank(rows,252);
+addUnifiedRanks(unifiedRanked);
+unifiedOnlyRows.sort((a,b)=>a.unifiedRank-b.unifiedRank||a.symbol.localeCompare(b.symbol,'en'));
 const source={name:'DoltHub · post-no-preference/stocks',url:'https://www.dolthub.com/repositories/post-no-preference/stocks',
   license:'CC BY-SA 4.0',licenseUrl:'https://creativecommons.org/licenses/by-sa/4.0/',commit,actionThrough,
   changeNotice:'Semiscope가 일별 OHLCV에 주식 분할을 반영하고 정해진 모형으로 장기 점수와 순위를 계산했습니다. 가공한 순위 데이터에도 CC BY-SA 4.0을 적용합니다.'};
@@ -295,8 +358,13 @@ const output={schemaVersion:1,modelVersion:ACCUMULATION_VERSION,buildVersion,asO
   source,listingSource:catalog.source,weights:ACCUMULATION_WEIGHTS,minimumSessions:504,maximumSessions:lookback,
   coverage:{listed:catalog.count,eligible:candidates.length,scored:rows.length,excluded},reasonLabels,excludedBySymbol,rows,
   timingModelVersion:BOTTOM_TIMING_VERSION,timingWeights:BOTTOM_TIMING_WEIGHTS,
-  timingCoverage:{scored:rows.filter(row=>row.timing?.date===asOf).length,eligible:rows.length}};
+  timingCoverage:{scored:rows.filter(row=>row.timing?.date===asOf).length,eligible:rows.length},
+  unifiedModelVersion:UNIFIED_VERSION,unifiedMinimumSessions:UNIFIED_MIN_BARS,
+  unifiedCoverage:{listed:catalog.count,eligible:unifiedEligible.size,scored:unifiedRanked.length,excluded:unifiedExcluded},
+  unifiedOnlyRows,unifiedExcludedBySymbol,unifiedReasonLabels};
 if(rows.length+Object.values(excluded).reduce((a,b)=>a+b,0)!==catalog.count || !rows.length)
   throw Error('Rank population reconciliation failed');
+if(!unifiedRanked.length || unifiedRanked.length+Object.values(unifiedExcluded).reduce((a,b)=>a+b,0)!==catalog.count)
+  throw Error('Unified rank population reconciliation failed');
 await atomic(path.join(dir,'long-ranks.json'),JSON.stringify(output));
-console.log('Verified ranking snapshot written.',asOf,JSON.stringify(output.coverage));
+console.log('Verified ranking snapshot written.',asOf,'legacy',JSON.stringify(output.coverage),'unified',JSON.stringify(output.unifiedCoverage));

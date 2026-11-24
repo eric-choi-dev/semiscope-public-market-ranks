@@ -187,14 +187,17 @@ export function buildAccumulation(data,ticker,options={}) {
   ];
   const result={version:ACCUMULATION_VERSION,asOf:candles.at(-1)[0],reference:ref,inputs,horizons:{}};
   for(const [period,weights] of Object.entries(ACCUMULATION_WEIGHTS)) {
-    const daily=factors.map(scoresAtClose=>scoresAtClose?contribution(scoresAtClose,weights).score:null);
-    const now=contribution(scores,weights),prior=daily.at(-2),history=[];
-    for(let i=0;i<daily.length;i++) if(daily[i]!==null) history.push({date:candles[i][0],score:daily[i]});
+    const latestFactors=options.currentOnly?factors.slice(-2):factors;
+    const daily=latestFactors.map(scoresAtClose=>scoresAtClose?contribution(scoresAtClose,weights).score:null);
+    const now=contribution(scores,weights),prior=daily.at(-2);
     result.horizons[period]={
       score:now.score,previous:prior??null,change:prior===null||prior===undefined?null:now.score-prior,
-      label:descriptions[bucket(now.score)],components:keys.map((key,i)=>({key,label:names[i],score:scores[i],weight:weights[i],points:now.points[i],reason:reasons[i]})),
-      history,validation:audit(candles,daily,Number(period),now.score)
+      label:descriptions[bucket(now.score)],components:keys.map((key,i)=>({key,label:names[i],score:scores[i],weight:weights[i],points:now.points[i],reason:reasons[i]}))
     };
+    if(options.currentOnly)continue;
+    const history=[];
+    for(let i=0;i<daily.length;i++) if(daily[i]!==null) history.push({date:candles[i][0],score:daily[i]});
+    Object.assign(result.horizons[period],{history,validation:audit(candles,daily,Number(period),now.score)});
   }
   return result;
 }

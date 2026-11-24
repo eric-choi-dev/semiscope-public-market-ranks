@@ -1,7 +1,11 @@
 # Semiscope public market ranks
 
-Daily numerical 252- and 504-session scores for eligible US exchange listings. The calculation uses the matching Nasdaq Trader directory date and the latest completed, commit-pinned OHLCV data from [DoltHub stocks](https://www.dolthub.com/repositories/post-no-preference/stocks). Scores and ranks are adapted from the price data and published under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+The unified entry index ranks eligible US exchange listings using at least 252 trading sessions. The score combines pullback, stabilization, medium-term momentum and downside risk. Each compact row preserves the model inputs and component contributions. Legacy 252- and 504-session scores remain available for their original cohort.
+
+The calculation matches the Nasdaq Trader directory date to completed, commit-pinned OHLCV data. If the directory advances before prices, the previous ranking keeps its trading date. Scores and ranks are adapted from [DoltHub stocks](https://www.dolthub.com/repositories/post-no-preference/stocks) and published under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 
 [Public ranking JSON](https://semiscope-ranks.deed.page/data/long-ranks.json)
 
-The scheduled workflow checks at 07:17 and 15:41 UTC. The published date changes when the two source datasets agree and verification succeeds. The latest successful check records its date, digest, coverage and source revision in last-run.json. Workflow dispatch can request a full independent reproduction of the current release. The publisher key is specific to the numerical data site.
+The scheduled workflow checks at 07:17 and 15:41 UTC. Each successful publication records its date, digest, coverage, price revision and directory checksum in `last-run.json`. The matching listing directory is archived in `last-directory.json.gz`. Workflow dispatch with `verify_current` reproduces the current release from that directory and its historical price revision.
+
+The one-time `migrate_unified` release uses the original November 20, 2026 cohort. Review the local candidate with `node scripts/refresh-cloud-ranks.mjs --review-unified-candidate <file>`. Dispatch the migration with its reported `expected_content_sha256`. The cloud run independently reproduces the candidate, checks every legacy ranking field, verifies the new scores and publishes against the unchanged previous version. The publishing key is specific to the numerical data site.
