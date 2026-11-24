@@ -5,6 +5,10 @@ on:
     - cron: '41 15 * * *'
   workflow_dispatch:
     inputs:
+      audit_quality:
+        description: Recheck the dated large-cap roster, filings and sampled closing prices from their sources
+        type: boolean
+        default: false
       verify_current:
         description: Rebuild the current market day and verify its public release
         type: boolean
@@ -26,8 +30,24 @@ permissions:
   contents: write
 
 jobs:
+  audit_large_cap:
+    if: github.ref == 'refs/heads/main' && inputs.audit_quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Compare the original filings and pinned prices with the published sample
+        run: node scripts/refresh-large-cap-universe.mjs --cache "$RUNNER_TEMP/semiscope-quality" --public-dir quality --audit-sources
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && !inputs.audit_quality
     runs-on: ubuntu-24.04
     timeout-minutes: 48
     steps:
@@ -85,6 +105,31 @@ jobs:
           if [ -d pending-directories ]; then git add -A -- pending-directories; fi
           if git diff --staged --quiet --; then exit 0; fi
           git -c user.name=Semiscope -c user.email=semiscope@users.noreply.github.com commit -m 'Record verified public market ranks'
+          git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' push origin HEAD:main
+      - name: Prepare the runtime for SEC bulk archive verification
+        if: ${{ !inputs.verify_current && !inputs.migrate_unified }}
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Match S&P 500 members and reported shares to the published price day
+        if: ${{ !inputs.verify_current && !inputs.migrate_unified }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/refresh-large-cap-universe.mjs --cache "$RUNNER_TEMP/semiscope-quality-sec" --public-dir quality \
+            --db "${RANK_CACHE_DIR:-/tmp/semiscope-rank-cache}/stockdb" --dolt "$DOLT_EXECUTABLE" --fetch-db
+          node --test scripts/test-large-cap-universe.mjs scripts/test-quality-sec-metrics.mjs
+      - name: Publish the dated large-cap screen
+        if: ${{ !inputs.verify_current && !inputs.migrate_unified }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- quality/
+          if git diff --staged --quiet --; then exit 0; fi
+          git -c user.name=Semiscope -c user.email=semiscope@users.noreply.github.com commit -m 'Publish the dated S&P 500 large-cap screen'
           git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' push origin HEAD:main
       - name: Verify new regular sessions in the independent price history
         id: history_delta
