@@ -89,5 +89,6 @@ function pack(model,horizon){
 export function encodeUnifiedResult(model,horizon) {
   if(horizon!==undefined)return pack(model,Number(horizon));
   const half=pack(model,126),year=pack(model,252);
-  return half&&year?{126:half,252:year}:null;
+  if(!half||!year||COMMON_FIELDS.some((_,i)=>half[11+i]!==year[11+i]))return null;
+  return {126:half,252:year};
 }
