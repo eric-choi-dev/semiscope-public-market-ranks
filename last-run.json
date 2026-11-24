@@ -1,6 +1,6 @@
 {
-  "state": "unified-release-published",
-  "checkedAt": "2026-11-24T02:15:46.783Z",
+  "state": "retained-price-source-behind",
+  "checkedAt": "2026-11-24T02:20:12.971Z",
   "asOf": "2026-11-20",
   "version": "v4",
   "sha256": "4fb3130a5e28ffb3fd0b5dbe5df63108a90118dd331a76574c4a8c9df4a9a892",
@@ -20,5 +20,24 @@
     }
   },
   "sourceCommit": "aef7n6a07m0r9tn7nrr0gfsjpstfdhr3",
+  "observedDirectoryDate": "2026-11-23",
+  "availablePriceDate": "2026-11-20",
+  "availablePriceCommit": "093tu4527bclpgc2dljdulrueht76vha",
+  "unifiedCoverage": {
+    "listed": 13262,
+    "eligible": 5294,
+    "scored": 4389,
+    "excluded": {
+      "unsupported_structure": 7968,
+      "no_source": 9,
+      "not_current": 49,
+      "short_history": 411,
+      "invalid_history": 0,
+      "uncertain_action": 366,
+      "halted": 70,
+      "inactive_or_discontinuous": 0
+    }
+  },
+  "unifiedModelVersion": "unified-entry-1.0",
   "directorySha256": "b4200a0d6ea669e3238735ee3f4a495d6d7da648ed25fb5768a4882da9ebc868"
 }
