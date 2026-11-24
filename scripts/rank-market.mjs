@@ -18,7 +18,7 @@ import {assessListing,assessUnifiedListing} from '../src/unified-eligibility.mjs
 const {values:args}=parseArgs({options:{
   dolt:{type:'string'},cache:{type:'string'},db:{type:'string'},'data-dir':{type:'string'},
   'as-of':{type:'string'},revision:{type:'string'},update:{type:'boolean',default:false},
-  'export-private-bars':{type:'string'},'prepare-bars':{type:'boolean'}
+  'export-private-bars':{type:'string'},'prepare-bars':{type:'boolean'},'lag-report':{type:'string'}
 }});
 if(args.revision!==undefined && !/^[0-9a-v]{32}$/.test(args.revision))
   throw Error('A pinned revision must be the full 32-character Dolt commit hash');
@@ -262,6 +262,9 @@ const asOf=args['as-of']??latest;
 if(!datePattern.test(asOf)||asOf>latest)throw Error('No source close for requested date');
 const catalog=JSON.parse(await readFile(path.join(dir,'us-listings.json'),'utf8'));
 if (!args.revision && !args['as-of'] && datePattern.test(catalog.asOf) && latest<catalog.asOf) {
+  if(args['lag-report'])await atomic(path.resolve(args['lag-report']),JSON.stringify({
+    priceDate:latest,directoryDate:catalog.asOf,sourceCommit:commit
+  }));
   console.error('Published price history ends '+latest+'; the listing directory is dated '+catalog.asOf);
   process.exit(75);
 }

@@ -8,4 +8,6 @@ The calculation matches the Nasdaq Trader directory date to completed, commit-pi
 
 The scheduled workflow checks at 07:17 and 15:41 UTC. Each successful publication records its date, digest, coverage, price revision and directory checksum in `last-run.json`. The matching listing directory is archived in `last-directory.json.gz`. Workflow dispatch with `verify_current` reproduces the current release from that directory and its historical price revision.
 
+The workflow retains the eight most recent verified Nasdaq directory dates in `pending-directories/`. When price history arrives a day behind the newest directory, it can publish that completed price date using the matching archived listings. A missing matching directory leaves the previous publication in place.
+
 The one-time `migrate_unified` release uses the original November 20, 2026 cohort. Review the local candidate with `node scripts/refresh-cloud-ranks.mjs --review-unified-candidate <file>`. Dispatch the migration with its reported `expected_content_sha256`. The cloud run independently reproduces the candidate, checks every legacy ranking field, verifies the new scores and publishes against the unchanged previous version. The publishing key is specific to the numerical data site.

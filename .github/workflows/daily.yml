@@ -81,6 +81,7 @@ jobs:
           # gh supplies its ephemeral token through its credential helper only during push.
           git add -- last-run.json
           if [ -f last-directory.json.gz ]; then git add -- last-directory.json.gz; fi
+          if [ -d pending-directories ]; then git add -A -- pending-directories; fi
           if git diff --staged --quiet --; then exit 0; fi
           git -c user.name=Semiscope -c user.email=semiscope@users.noreply.github.com commit -m 'Record verified public market ranks'
           git -c credential.helper= -c 'credential.https://github.com.helper=!gh auth git-credential' push origin HEAD:main

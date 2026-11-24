@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,12 +37,76 @@ const origin = 'https://' + slug + '.deed.page';
 const rankPath = 'data/long-ranks.json';
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const userAgent = 'Semiscope rank publisher';
+const directoryHistory=path.join(root,'pending-directories');
+const archiveName=/^(\d{4}-\d{2}-\d{2})\.([a-f0-9]{64})\.json\.gz$/;
+const directoryURLs=['nasdaqlisted.txt','otherlisted.txt'].map(file=>'https://www.nasdaqtrader.com/dynamic/SymDir/'+file);
 
 function day(value) {
   assert.equal(typeof value,'string','Date missing');
   assert.match(value,/^\d{4}-\d{2}-\d{2}$/);
   assert.equal(new Date(value + 'T00:00:00Z').toISOString().slice(0,10),value,'Invalid date');
   return value;
+}
+
+function checkDirectory(data,date) {
+  assert.equal(data.source,'Nasdaq Trader');
+  assert.equal(data.sourceMode,'directory','A provider fallback cannot become a historical roster');
+  assert.equal(day(data.asOf),day(date));
+  assert(Array.isArray(data.items) && data.items.length>=1000 && data.count===data.items.length);
+  assert.equal(new Set(data.items.map(item=>item.symbol)).size,data.count,'Duplicate directory symbols');
+  assert.equal(data.sources?.length,2);
+  for(const url of directoryURLs){
+    const s=data.sources.find(item=>item.url===url);
+    assert(s && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(s.createdAtET) && s.createdAtET.slice(0,10)===date,'Unverified source directory date');
+  }
+}
+
+async function archivedDirectories(dir) {
+  const names=await readdir(dir).catch(error=>{if(error.code==='ENOENT')return [];throw error;});
+  return names.filter(name=>archiveName.test(name)).sort();
+}
+
+async function readDirectoryArchive(dir,name) {
+  const [,date,digest]=archiveName.exec(name);
+  const bytes=gunzipSync(await readFile(path.join(dir,name)),{maxOutputLength:8*1024*1024});
+  assert.equal(sha256(bytes),digest,'Archived listing bytes do not match their digest');
+  const data=JSON.parse(bytes);
+  checkDirectory(data,date);
+  return {bytes,data};
+}
+
+async function rememberDirectory(bytes,dir=directoryHistory) {
+  const data=JSON.parse(bytes),date=day(data.asOf);
+  checkDirectory(data,date);
+  await mkdir(dir,{recursive:true});
+  const names=await archivedDirectories(dir);
+  const sameDate=names.filter(name=>name.startsWith(date+'.'));
+  assert(sameDate.length<=1,'Ambiguous archived listing directory for '+date);
+  let selected=bytes;
+  if(sameDate.length){
+    const prior=await readDirectoryArchive(dir,sameDate[0]);
+    const revisions=data.sources.map(s=>s.createdAtET.localeCompare(prior.data.sources.find(old=>old.url===s.url).createdAtET));
+    // Ignore a later retrieval timestamp if the exchange has not issued new
+    // files. Never replace a verified roster with an older source revision.
+    if(revisions.some(value=>value<0) || revisions.every(value=>value===0))selected=prior.bytes;
+  }
+  const name=date+'.'+sha256(selected)+'.json.gz';
+  if(!names.includes(name)){
+    const dest=path.join(dir,name),staged=dest+'.tmp-'+process.pid;
+    await writeFile(staged,gzipSync(selected,{level:9}));
+    await rename(staged,dest);
+  }
+  const latest=[...new Set([...names.map(f=>f.slice(0,10)),date])].sort().slice(-8);
+  for(const prior of new Set([...names,name])){
+    if((prior.startsWith(date+'.') && prior!==name) || !latest.includes(prior.slice(0,10)))await rm(path.join(dir,prior));
+  }
+  return selected;
+}
+
+async function directoryForDate(date,dir=directoryHistory) {
+  const found=(await archivedDirectories(dir)).filter(name=>name.startsWith(day(date)+'.'));
+  assert(found.length<=1,'Ambiguous archived listing directory');
+  return found.length?(await readDirectoryArchive(dir,found[0])).bytes:null;
 }
 
 function execute(program, args, {allowPriceLag=false}={}) {
@@ -325,9 +389,11 @@ async function publish(stage, previous, digest) {
   return latest;
 }
 
-async function report(state, m, data, directoryFile) {
+async function report(state, m, data, directoryFile, observation={}) {
   const proof = {state,checkedAt:new Date().toISOString(),asOf:data.asOf,version:'v'+m.version,
-    sha256:rankDigest(m),coverage:data.coverage,sourceCommit:data.source.commit};
+    sha256:rankDigest(m),coverage:data.coverage,sourceCommit:data.source.commit,...observation};
+  if(data.unifiedCoverage)proof.unifiedCoverage=data.unifiedCoverage;
+  if(data.unifiedModelVersion)proof.unifiedModelVersion=data.unifiedModelVersion;
   const target = path.join(root,'last-run.json'), temporary = target+'.tmp-'+process.pid;
   if(directoryFile){
     const bytes=await readFile(directoryFile);
@@ -345,7 +411,7 @@ async function report(state, m, data, directoryFile) {
   }
   await writeFile(temporary,JSON.stringify(proof,null,2)+'\n');
   await rename(temporary,target);
-  console.log(state,proof.asOf,proof.version,proof.coverage.scored+' scored',proof.sha256);
+  console.log(state,proof.asOf,proof.version,(proof.unifiedCoverage?.scored??proof.coverage.scored)+' scored',proof.sha256);
 }
 
 const contentDigest=data=>{
@@ -370,29 +436,57 @@ async function run(stage) {
   }
   const dataDir=path.join(stage,'data');
   const {data:catalog,held}=await stageDirectory(dataDir,previous,current);
-  const date=day(catalog.asOf);
+  let date=day(catalog.asOf);
   assert(date>=previous.asOf,'Directory feed predates current public ranking');
   if(held){await report('retained-directory-unavailable',current,previous);return;}
   const replay=migrateUnified || verifyCurrent;
+  const directoryFile=path.join(dataDir,'us-listings.json');
+  if(!replay){
+    const observed=await readFile(directoryFile),selected=await rememberDirectory(observed);
+    if(!selected.equals(observed))await writeFile(directoryFile,selected);
+  }
   if(!replay && date===previous.asOf){await report('current',current,previous);return;}
-  const code=await execute(process.execPath,[path.join(root,'scripts','rank-market.mjs'),
+  const scorer=[path.join(root,'scripts','rank-market.mjs'),
     '--dolt',process.env.DOLT_EXECUTABLE || 'dolt','--db',path.join(cache,'stockdb'),
-    '--cache',path.join(stage,'jobs'),'--data-dir',dataDir,'--update',
-    ...(replay?['--revision',previous.source.commit,'--as-of',previous.asOf]:[])],{allowPriceLag:!replay});
+    '--cache',path.join(stage,'jobs'),'--data-dir',dataDir];
+  const lagFile=path.join(stage,'lag.json');
+  const code=await execute(process.execPath,[...scorer,'--update',...(replay?
+    ['--revision',previous.source.commit,'--as-of',previous.asOf]:['--lag-report',lagFile])],{allowPriceLag:!replay});
+  let observedSource;
   if(code===75){
-    await report('retained-price-source-behind',current,previous);
-    return;
+    const lag=JSON.parse(await readFile(lagFile,'utf8'));
+    assert.equal(lag.directoryDate,date,'Price-lag report belongs to a different roster');
+    assert.match(lag.sourceCommit,/^[0-9a-v]{32}$/);
+    const available=day(lag.priceDate);
+    assert(available<date,'Price-lag report does not describe an earlier close');
+    const observation={observedDirectoryDate:date,availablePriceDate:available,availablePriceCommit:lag.sourceCommit};
+    if(available<=previous.asOf){
+      await report(available===previous.asOf?'retained-price-source-behind':'retained-price-source-regressed',current,previous,null,observation);
+      return;
+    }
+    const historical=await directoryForDate(available);
+    if(!historical){
+      await report('retained-matching-directory-unavailable',current,previous,null,observation);
+      return;
+    }
+    await writeFile(directoryFile,historical);
+    date=available;
+    observedSource=lag.sourceCommit;
+    // Re-use the already-fetched origin/master. Let the scorer independently
+    // require its latest price date to equal the archived directory date.
+    await execute(process.execPath,scorer);
   }
   const bytes=await readFile(path.join(stage,rankPath)),candidate=JSON.parse(bytes);
+  if(observedSource)assert.equal(candidate.source?.commit,observedSource,'Price revision changed during the lagged-date calculation');
   if(migrateUnified){
     compareMigration(candidate,previous,current);
     assert.equal(contentDigest(candidate),values['expected-content-sha256'],'Independent cloud rebuild differs from reviewed unified ranking');
   }else compareCandidate(candidate,previous,date);
   const published=await publish(stage,current,sha256(bytes));
-  await report(migrateUnified?'unified-release-published':verifyCurrent?'reproduced-and-published':'published',published,candidate,path.join(dataDir,'us-listings.json'));
+  await report(migrateUnified?'unified-release-published':verifyCurrent?'reproduced-and-published':'published',published,candidate,directoryFile);
 }
 
-export {checkSnapshot,compareMigration,compareCandidate,contentDigest};
+export {checkSnapshot,compareMigration,compareCandidate,contentDigest,rememberDirectory,directoryForDate};
 if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   await mkdir(cache,{recursive:true});
   const stage=await mkdtemp(path.join(cache,'run-'));
