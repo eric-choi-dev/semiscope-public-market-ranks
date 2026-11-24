@@ -1,43 +1,40 @@
 {
-  "state": "retained-price-source-behind",
-  "checkedAt": "2026-11-24T02:35:21.232Z",
-  "asOf": "2026-11-20",
-  "version": "v4",
-  "sha256": "4fb3130a5e28ffb3fd0b5dbe5df63108a90118dd331a76574c4a8c9df4a9a892",
+  "state": "published",
+  "checkedAt": "2026-11-24T16:18:36.097Z",
+  "asOf": "2026-11-23",
+  "version": "v5",
+  "sha256": "f06cfa712d054a0c2a7061adcb5fe0cc9152b34273e6c1bb7056221241e04b2e",
   "coverage": {
-    "listed": 13262,
-    "eligible": 5293,
-    "scored": 3469,
+    "listed": 13277,
+    "eligible": 5294,
+    "scored": 3470,
     "excluded": {
-      "unsupported_structure": 7969,
-      "no_source": 11,
-      "not_current": 121,
-      "short_history": 879,
+      "unsupported_structure": 7983,
+      "no_source": 6,
+      "not_current": 78,
+      "short_history": 924,
       "invalid_history": 0,
-      "uncertain_action": 658,
-      "halted": 155,
+      "uncertain_action": 656,
+      "halted": 160,
       "benchmark_unavailable": 0
     }
   },
-  "sourceCommit": "aef7n6a07m0r9tn7nrr0gfsjpstfdhr3",
-  "observedDirectoryDate": "2026-11-23",
-  "availablePriceDate": "2026-11-20",
-  "availablePriceCommit": "093tu4527bclpgc2dljdulrueht76vha",
+  "sourceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
   "unifiedCoverage": {
-    "listed": 13262,
-    "eligible": 5294,
-    "scored": 4389,
+    "listed": 13277,
+    "eligible": 5297,
+    "scored": 4396,
     "excluded": {
-      "unsupported_structure": 7968,
-      "no_source": 9,
-      "not_current": 49,
-      "short_history": 411,
+      "unsupported_structure": 7980,
+      "no_source": 6,
+      "not_current": 41,
+      "short_history": 428,
       "invalid_history": 0,
-      "uncertain_action": 366,
-      "halted": 70,
+      "uncertain_action": 354,
+      "halted": 72,
       "inactive_or_discontinuous": 0
     }
   },
   "unifiedModelVersion": "unified-entry-1.0",
-  "directorySha256": "b4200a0d6ea669e3238735ee3f4a495d6d7da648ed25fb5768a4882da9ebc868"
+  "directorySha256": "ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2"
 }
