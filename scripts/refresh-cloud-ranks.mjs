@@ -9,25 +9,29 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { setTimeout as pause } from 'node:timers/promises';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import {UNIFIED_VERSION,UNIFIED_MIN_BARS,decodeUnifiedResult} from '../src/unified-index.mjs';
+import {UNIFIED_VERSION,UNIFIED_MIN_BARS,decodeUnifiedResult,encodeUnifiedResult} from '../src/unified-index.mjs';
+import {BOTTOM_TARGET_ID,CALIBRATION,CALIBRATION_VERSION} from '../src/bottom-calibration.mjs';
 
 const {values} = parseArgs({options:{
   'verify-current':{type:'boolean',default:false},
   'migrate-unified':{type:'boolean',default:false},
   'review-unified-candidate':{type:'string'},
+  'check-packets-file':{type:'string'},
   'expected-content-sha256':{type:'string'},
 }});
 const verifyCurrent = values['verify-current'];
 const migrateUnified = values['migrate-unified'];
 const reviewFile = values['review-unified-candidate'];
-assert([verifyCurrent,migrateUnified,Boolean(reviewFile)].filter(Boolean).length <= 1,'Choose one release mode');
+const packetFile=values['check-packets-file'];
+assert([verifyCurrent,migrateUnified,Boolean(reviewFile),Boolean(packetFile)].filter(Boolean).length <= 1,'Choose one release mode');
 if(migrateUnified)assert.match(values['expected-content-sha256']||'',/^[a-f0-9]{64}$/,'Pass the verified content SHA-256 from the independent candidate review');
 const release={
-  baselineSiteVersion:3,
-  baselineSha256:'77e65485abf6c774a3688f261347aa5d8b684b9d61a03c1e612783fa52f8804c',
-  directorySha256:'b4200a0d6ea669e3238735ee3f4a495d6d7da648ed25fb5768a4882da9ebc868',
-  asOf:'2026-11-20',sourceCommit:'aef7n6a07m0r9tn7nrr0gfsjpstfdhr3',
-  previousBuild:'rank-market-2.0',nextBuild:'rank-market-3.0',timingModel:'bottom-timing-1.0',
+  baselineSiteVersion:5,
+  baselineSha256:'f06cfa712d054a0c2a7061adcb5fe0cc9152b34273e6c1bb7056221241e04b2e',
+  directorySha256:'ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2',
+  asOf:'2026-11-23',sourceCommit:'njs8j85h7atjqje4ldfu4c4lillpka3t',
+  previousBuild:'rank-market-3.0',previousModel:'unified-entry-1.0',nextBuild:'rank-market-4.0',
+  nextModel:'bottom-probability-2.0',timingModel:'bottom-timing-1.0',
 };
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cache = path.resolve(process.env.RANK_CACHE_DIR || path.join(tmpdir(),'semiscope-rank-cache'));
@@ -220,6 +224,7 @@ async function stageDirectory(dataDir,previous,current) {
 
 function checkSnapshot(snapshot) {
   day(snapshot.asOf);
+  assert.equal(snapshot.buildVersion,release.nextBuild,'Unreviewed ranking generation');
   assert.equal(snapshot.source?.license,'CC BY-SA 4.0');
   assert.match(snapshot.source?.commit || '',/^[0-9a-v]{32}$/);
   assert.equal(snapshot.listingSource,'Nasdaq Trader');
@@ -270,13 +275,23 @@ function checkSnapshot(snapshot) {
     }
   }
   if(hasTiming)assert.equal(validTiming,snapshot.timingCoverage.scored);
-  if(snapshot.unifiedModelVersion!==undefined || snapshot.buildVersion===release.nextBuild)checkUnified(snapshot);
+  checkUnified(snapshot);
 }
 
 function checkUnified(snapshot) {
   assert.equal(snapshot.buildVersion,release.nextBuild);
+  assert.equal(UNIFIED_VERSION,release.nextModel,'The calculation code and publisher differ');
   assert.equal(snapshot.unifiedModelVersion,UNIFIED_VERSION);
   assert.equal(snapshot.unifiedMinimumSessions,UNIFIED_MIN_BARS);
+  assert.equal(snapshot.unifiedTargetId,BOTTOM_TARGET_ID,'Published rebound definition differs from calculation code');
+  assert.equal(CALIBRATION.targetId,BOTTOM_TARGET_ID,'Calibration belongs to another rebound definition');
+  assert.equal(CALIBRATION.modelVersion,UNIFIED_VERSION,'Calibration belongs to another probability model');
+  const vintage=CALIBRATION.vintages.findLast(v=>v.date<=snapshot.asOf);
+  assert.equal(CALIBRATION.calibrationVersion,CALIBRATION_VERSION,'Unexpected model calibration version');
+  assert(vintage&&Array.isArray(vintage.bins)&&vintage.bins.length,'No valid calibration vintage is available');
+  assert(day(vintage.through)<day(vintage.date) && vintage.date<=snapshot.asOf,'Calibration uses an unsettled outcome');
+  assert.deepEqual(snapshot.unifiedCalibration,{version:CALIBRATION_VERSION,sha256:sha256(JSON.stringify(CALIBRATION)),
+    vintage:day(vintage.date),outcomesThrough:vintage.through},'Model calibration differs from the reviewed artifact');
   const {listed,eligible,scored,excluded}=snapshot.unifiedCoverage;
   assert.equal(listed,snapshot.coverage.listed);
   assert(Number.isSafeInteger(eligible) && Number.isSafeInteger(scored) && 0<scored && scored<=eligible && eligible<=listed);
@@ -303,11 +318,24 @@ function checkUnified(snapshot) {
       assert.equal(row.unifiedRank,null);
       continue;
     }
-    // The canonical codec rejects unknown packet versions, out-of-range raw
-    // inputs, inconsistent weights/points and incorrect rounded scores.
+    // A neutral zero is a real result. Only null denotes an omitted model
+    // observation. Read and write the entire packet to verify its wire form.
+    assert(Array.isArray(row.unified),'Expected a complete model packet for '+row.symbol);
     const score=decodeUnifiedResult(row.unified,row.asOf);
     assert(score,'Invalid unified packet for '+row.symbol);
     assert.equal(score.version,snapshot.unifiedModelVersion);
+    assert(Number.isSafeInteger(score.score)&&score.score>=0&&score.score<=100,'Invalid probability score for '+row.symbol);
+    assert.equal(score.probability,score.score);
+    if(score.zone){
+      const c=score.calibration;
+      assert.equal(c.vintage,vintage.date);assert.equal(c.through,vintage.through);
+      assert(Number.isSafeInteger(c.n)&&c.n>0&&Number.isSafeInteger(c.wins)&&c.wins>=0&&c.wins<=c.n);
+      assert(Number.isFinite(c.rate)&&Math.round(c.rate)===score.score);
+      assert(c.low<=score.rawStrength && score.rawStrength<=c.high);
+    }else{
+      assert.equal(score.score,0);assert.equal(score.greenEligible,false);
+    }
+    assert.deepEqual(encodeUnifiedResult(score),row.unified,'Noncanonical probability packet for '+row.symbol);
     assert(Number.isSafeInteger(row.nBars) && row.nBars>=snapshot.unifiedMinimumSessions);
     assert(!Object.hasOwn(snapshot.unifiedExcludedBySymbol,row.symbol),'A scored symbol is listed as excluded');
     ranked.push({score:score.score,rank:row.unifiedRank});
@@ -325,6 +353,7 @@ function migrationBaseline(previous,current){
   assert.equal(current.version,release.baselineSiteVersion,'Migration baseline site version changed');
   assert.equal(rankDigest(current),release.baselineSha256,'Migration baseline bytes changed');
   assert.equal(previous.buildVersion,release.previousBuild);
+  assert.equal(previous.unifiedModelVersion,release.previousModel);
   assert.equal(previous.asOf,release.asOf);
   assert.equal(previous.source.commit,release.sourceCommit);
 }
@@ -335,11 +364,14 @@ function compareMigration(next,previous,current){
   assert.equal(next.buildVersion,release.nextBuild);
   assert.equal(next.asOf,previous.asOf);
   assert.equal(next.source.commit,previous.source.commit);
-  const {generatedAt,unifiedModelVersion,unifiedMinimumSessions,unifiedCoverage,unifiedOnlyRows,unifiedExcludedBySymbol,unifiedReasonLabels,rows,...shared}=next;
-  const {generatedAt:priorTime,...old}=previous;
-  const legacy=rows.map(({unified,unifiedRank,...row})=>row);
-  assert(isDeepStrictEqual({...shared,buildVersion:previous.buildVersion,rows:legacy},old),
-    'The additive migration changed an existing date, price revision, symbol, rank, input or legacy score');
+  function preserved(snapshot){
+    const {generatedAt,buildVersion,unifiedModelVersion,unifiedMinimumSessions,unifiedCalibration,unifiedTargetId,unifiedCoverage,unifiedOnlyRows,
+      unifiedExcludedBySymbol,unifiedReasonLabels,rows,source,...shared}=snapshot;
+    const {changeNotice,...provenance}=source;
+    return {...shared,source:provenance,rows:rows.map(({unified,unifiedRank,...row})=>row)};
+  }
+  assert(isDeepStrictEqual(preserved(next),preserved(previous)),
+    'The model update changed an existing date, listing, price revision or legacy ranking');
 }
 
 function compareCandidate(next, previous, date) {
@@ -347,10 +379,13 @@ function compareCandidate(next, previous, date) {
   assert.equal(next.asOf,date,'Latest directory and price dates differ');
   assert(next.asOf >= previous.asOf,'Ranking date regression');
   assert.equal(next.buildVersion,release.nextBuild,'Expected unified rank generation');
-  for (const name of ['schemaVersion','modelVersion','buildVersion','timingModelVersion','unifiedModelVersion','unifiedMinimumSessions']) assert.equal(next[name],previous[name]);
+  for (const name of ['schemaVersion','modelVersion','buildVersion','timingModelVersion','unifiedModelVersion','unifiedMinimumSessions','unifiedTargetId']) assert.equal(next[name],previous[name]);
   assert.deepEqual(next.timingWeights,previous.timingWeights);
   if(previous.timingCoverage)assert(next.timingCoverage.scored>=.85*previous.timingCoverage.scored,'Unexpected loss of verified timing coverage');
-  if(previous.unifiedCoverage)assert(next.unifiedCoverage.scored>=.85*previous.unifiedCoverage.scored,'Unexpected loss of unified score coverage');
+  // An asset with verified OHLCV can enter a price zone whose completed
+  // calibration sample is too small. Its unavailable score is publishable.
+  const withPrices=c=>c.scored+(c.excluded.insufficient_calibration??0);
+  assert(withPrices(next.unifiedCoverage)>=.85*withPrices(previous.unifiedCoverage),'Unexpected loss of verified price coverage');
   assert(next.coverage.listed >= .90*previous.coverage.listed && next.coverage.scored >= .85*previous.coverage.scored,'Unexpected loss of listing or price coverage');
   if (next.asOf === previous.asOf) {
     assert(verifyCurrent,'Same-day publication requires --verify-current');
@@ -394,6 +429,8 @@ async function report(state, m, data, directoryFile, observation={}) {
     sha256:rankDigest(m),coverage:data.coverage,sourceCommit:data.source.commit,...observation};
   if(data.unifiedCoverage)proof.unifiedCoverage=data.unifiedCoverage;
   if(data.unifiedModelVersion)proof.unifiedModelVersion=data.unifiedModelVersion;
+  if(data.unifiedTargetId)proof.unifiedTargetId=data.unifiedTargetId;
+  if(data.unifiedCalibration)proof.unifiedCalibration=data.unifiedCalibration;
   const target = path.join(root,'last-run.json'), temporary = target+'.tmp-'+process.pid;
   if(directoryFile){
     const bytes=await readFile(directoryFile);
@@ -421,7 +458,10 @@ const contentDigest=data=>{
 
 async function run(stage) {
   const current = await manifest(), previous = await readPublished(current);
-  checkSnapshot(previous);
+  // The old model uses a different packet codec. Its exact published bytes,
+  // cohort and source revision are pinned rather than decoded as new scores.
+  if(previous.buildVersion===release.previousBuild)migrationBaseline(previous,current);
+  else checkSnapshot(previous);
   if(reviewFile){
     const candidate=JSON.parse(await readFile(path.resolve(reviewFile),'utf8'));
     compareMigration(candidate,previous,current);
@@ -488,10 +528,14 @@ async function run(stage) {
 
 export {checkSnapshot,compareMigration,compareCandidate,contentDigest,rememberDirectory,directoryForDate};
 if(process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-  await mkdir(cache,{recursive:true});
-  const stage=await mkdtemp(path.join(cache,'run-'));
-  try {await run(stage);}
-  finally {
-    await rm(stage,{recursive:true,force:true});
+  if(packetFile){
+    const candidate=JSON.parse(await readFile(path.resolve(packetFile),'utf8'));
+    checkSnapshot(candidate);
+    console.log('Verified probability packets',candidate.asOf,candidate.unifiedCoverage.scored,contentDigest(candidate));
+  }else{
+    await mkdir(cache,{recursive:true});
+    const stage=await mkdtemp(path.join(cache,'run-'));
+    try {await run(stage);}
+    finally {await rm(stage,{recursive:true,force:true});}
   }
 }

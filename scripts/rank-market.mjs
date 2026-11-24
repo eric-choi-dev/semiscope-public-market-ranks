@@ -1,4 +1,4 @@
-// Node 20+ and Dolt. Private price data stays in --cache. Only the final
+// Node 22+ and Dolt. Private price data stays in --cache. Only the final
 // CC BY-SA score dataset is written to the site's public data directory.
 import {createReadStream,createWriteStream,existsSync} from 'node:fs';
 import {mkdir,readFile,writeFile,rename} from 'node:fs/promises';
@@ -13,6 +13,7 @@ import {setTimeout as pause} from 'node:timers/promises';
 import {buildAccumulation,buildFactorTape,ACCUMULATION_VERSION,ACCUMULATION_WEIGHTS} from '../src/accumulation.mjs';
 import {BOTTOM_TIMING_VERSION,BOTTOM_TIMING_WEIGHTS,latestBottomTiming} from '../src/bottom-timing.mjs';
 import {UNIFIED_VERSION,UNIFIED_MIN_BARS,latestUnifiedIndex,encodeUnifiedResult} from '../src/unified-index.mjs';
+import {BOTTOM_TARGET_ID,CALIBRATION,CALIBRATION_VERSION} from '../src/bottom-calibration.mjs';
 import {assessListing,assessUnifiedListing} from '../src/unified-eligibility.mjs';
 
 const {values:args}=parseArgs({options:{
@@ -27,11 +28,12 @@ const dir=path.resolve(args['data-dir']??path.join(root,'public','data'));
 const cache=path.resolve(args.cache??path.join(root,'.rank-cache')),db=path.resolve(args.db??path.join(cache,'stockdb'));
 const binary=args.dolt && /[\\/]/.test(args.dolt)?path.resolve(args.dolt):(args.dolt??'dolt');
 const sourceRepo='post-no-preference/stocks';
-const buildVersion='rank-market-3.0';
+const buildVersion='rank-market-4.0';
 const reasonLabels={unsupported_structure:'모델 대상 외 증권 유형',no_source:'가격 자료 없음',not_current:'기준일 체결 자료 없음',
   short_history:'확정 거래일 504개 미만',invalid_history:'종가·OHLC 품질 확인 필요',uncertain_action:'분할 또는 가격 단절 확인 필요',
   halted:'장기 거래 공백 이후 이력 부족',benchmark_unavailable:'기준시장 이력 부족'};
 const unifiedReasonLabels={...reasonLabels,short_history:'확정 거래일 252개 미만',
+  insufficient_calibration:'비슷한 과거 저점에서 40거래일 결과가 확정된 표본 부족',
   inactive_or_discontinuous:'최근 63거래일의 가격 변화 또는 거래 연속성 부족'};
 delete unifiedReasonLabels.benchmark_unavailable;
 const lookback=1008; // 252 high observations + up to 756 preceding drawdown observations.
@@ -187,6 +189,9 @@ function unifiedEvaluation(listing,raw) {
   if(asset.reason)return {reason:asset.reason};
   const result=latestUnifiedIndex(asset.candles);
   if(!result)return {reason:'inactive_or_discontinuous'};
+  if(result.score===null)return {reason:'insufficient_calibration'};
+  if(result.version!==UNIFIED_VERSION||!Number.isInteger(result.score)||result.score<0||result.score>100)
+    throw Error('Unexpected bottom probability for '+listing.symbol);
   const packet=encodeUnifiedResult(result);
   if(!packet)throw Error('Unable to represent the verified unified score for '+listing.symbol);
   return {score:result.score,nBars:asset.availableSessions,packet};
@@ -286,7 +291,8 @@ const wanted=new Map(catalog.items.filter(l=>legacyEligible.has(l.symbol)||unifi
 const groups=Array.from({length:shardCount},()=>[]);
 for(const l of wanted.values())groups[shard(l.symbol)].push(l);
 const defs=await Promise.all(['../src/accumulation.mjs','../src/bottom-timing.mjs',
-  '../src/unified-index.mjs','../src/unified-eligibility.mjs','../src/cef-registry.mjs','../src/bdc-registry.mjs',
+  '../src/unified-index.mjs','../src/bottom-strength.mjs','../src/bottom-calibration.mjs','../src/bottom-calibration-data.json',
+  '../src/unified-eligibility.mjs','../src/cef-registry.mjs','../src/bdc-registry.mjs',
   './rank-market.mjs'].map(rel=>readFile(new URL(rel,import.meta.url))));
 const configHash=sha([catalog.asOf,JSON.stringify(catalog.items),...defs].join('\n')).slice(0,14);
 const job=path.join(cache,asOf+'-'+commit+'-'+configHash);
@@ -311,6 +317,11 @@ if(args['export-private-bars']) {
   await exportPrivateBars(args['export-private-bars']);
   process.exit(0);
 }
+const vintage=CALIBRATION.vintages.findLast(v=>v.date<=asOf);
+if(CALIBRATION.targetId!==BOTTOM_TARGET_ID||CALIBRATION.calibrationVersion!==CALIBRATION_VERSION||!vintage?.bins?.length||
+   !datePattern.test(vintage.through)||vintage.through>=asOf)throw Error('No mature bottom calibration for this ranking date');
+const unifiedCalibration={version:CALIBRATION_VERSION,sha256:sha(JSON.stringify(CALIBRATION)),
+  vintage:vintage.date,outcomesThrough:vintage.through};
 const refs={};
 for(const [key,bars] of rawRefs){const ref=adjusted(key,bars);if(!ref.reason)refs[key]=ref;}
 if(!refs.SPY)throw Error('Benchmark price integrity could not be verified');
@@ -356,13 +367,13 @@ addUnifiedRanks(unifiedRanked);
 unifiedOnlyRows.sort((a,b)=>a.unifiedRank-b.unifiedRank||a.symbol.localeCompare(b.symbol,'en'));
 const source={name:'DoltHub · post-no-preference/stocks',url:'https://www.dolthub.com/repositories/post-no-preference/stocks',
   license:'CC BY-SA 4.0',licenseUrl:'https://creativecommons.org/licenses/by-sa/4.0/',commit,actionThrough,
-  changeNotice:'Semiscope가 일별 OHLCV에 주식 분할을 반영하고 정해진 모형으로 장기 점수와 순위를 계산했습니다. 가공한 순위 데이터에도 CC BY-SA 4.0을 적용합니다.'};
+  changeNotice:'Semiscope가 분할 조정 일봉으로 확인된 저점·반등 조건의 확률과 종목 순위를 계산했습니다. 가공한 순위 데이터에도 CC BY-SA 4.0을 적용합니다.'};
 const output={schemaVersion:1,modelVersion:ACCUMULATION_VERSION,buildVersion,asOf,generatedAt:new Date().toISOString(),
   source,listingSource:catalog.source,weights:ACCUMULATION_WEIGHTS,minimumSessions:504,maximumSessions:lookback,
   coverage:{listed:catalog.count,eligible:candidates.length,scored:rows.length,excluded},reasonLabels,excludedBySymbol,rows,
   timingModelVersion:BOTTOM_TIMING_VERSION,timingWeights:BOTTOM_TIMING_WEIGHTS,
   timingCoverage:{scored:rows.filter(row=>row.timing?.date===asOf).length,eligible:rows.length},
-  unifiedModelVersion:UNIFIED_VERSION,unifiedMinimumSessions:UNIFIED_MIN_BARS,
+  unifiedModelVersion:UNIFIED_VERSION,unifiedMinimumSessions:UNIFIED_MIN_BARS,unifiedTargetId:BOTTOM_TARGET_ID,unifiedCalibration,
   unifiedCoverage:{listed:catalog.count,eligible:unifiedEligible.size,scored:unifiedRanked.length,excluded:unifiedExcluded},
   unifiedOnlyRows,unifiedExcludedBySymbol,unifiedReasonLabels};
 if(rows.length+Object.values(excluded).reduce((a,b)=>a+b,0)!==catalog.count || !rows.length)
