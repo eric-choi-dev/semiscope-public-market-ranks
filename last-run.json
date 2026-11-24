@@ -1,18 +1,18 @@
 {
-  "state": "retained-price-source-behind",
-  "checkedAt": "2026-11-24T18:56:47.466Z",
+  "state": "unified-release-published",
+  "checkedAt": "2026-11-24T22:28:39.147Z",
   "asOf": "2026-11-23",
-  "version": "v8",
-  "sha256": "6753e78f8e1d922af8a8e18cc3dcc7b565b6943668c4e807f09dedc4dfe9c8ea",
-  "buildVersion": "rank-market-6.0",
-  "modelVersion": "long-entry-index-4.0",
+  "version": "v9",
+  "sha256": "a144940800aabe04fbb8c9f3f9309418931520bcbe8ebf3619ece97fe822eab2",
+  "buildVersion": "rank-market-7.0",
+  "modelVersion": "long-entry-index-5.0",
   "coverage": {
     "listed": 13277,
     "eligible": 5297,
     "byHorizon": {
       "126": {
         "scored": 3858,
-        "atLeast80": 3,
+        "atLeast80": 155,
         "excluded": {
           "unsupported_structure": 7980,
           "no_source": 6,
@@ -26,7 +26,7 @@
       },
       "252": {
         "scored": 3858,
-        "atLeast80": 13,
+        "atLeast80": 155,
         "excluded": {
           "unsupported_structure": 7980,
           "no_source": 6,
@@ -41,14 +41,11 @@
     }
   },
   "sourceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
-  "observedDirectoryDate": "2026-11-24",
-  "availablePriceDate": "2026-11-23",
-  "availablePriceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
   "horizons": [
     126,
     252
   ],
-  "modelSourceSha256": "8b08d246c8ceca1cafe013483bd7d4f63e282e40d5edb9b70e8a14c13276e64a",
+  "modelSourceSha256": "061daf1f0688a66086c564fe4a88a0cbc3042bfea96ed3dba113b47e00672c05",
   "minimumSessions": 504,
   "directorySha256": "ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2"
 }
