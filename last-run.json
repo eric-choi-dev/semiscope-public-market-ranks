@@ -1,18 +1,18 @@
 {
   "state": "unified-release-published",
-  "checkedAt": "2026-11-24T17:28:18.525Z",
+  "checkedAt": "2026-11-24T17:55:10.881Z",
   "asOf": "2026-11-23",
-  "version": "v7",
-  "sha256": "a3f775f83e402894748ebd3d33265101896dc01f414fc3a062d4c7a1596fa06c",
-  "buildVersion": "rank-market-5.0",
-  "modelVersion": "long-entry-index-3.0",
+  "version": "v8",
+  "sha256": "6753e78f8e1d922af8a8e18cc3dcc7b565b6943668c4e807f09dedc4dfe9c8ea",
+  "buildVersion": "rank-market-6.0",
+  "modelVersion": "long-entry-index-4.0",
   "coverage": {
     "listed": 13277,
     "eligible": 5297,
     "byHorizon": {
       "126": {
         "scored": 3858,
-        "atLeast80": 5,
+        "atLeast80": 3,
         "excluded": {
           "unsupported_structure": 7980,
           "no_source": 6,
@@ -26,7 +26,7 @@
       },
       "252": {
         "scored": 3858,
-        "atLeast80": 21,
+        "atLeast80": 13,
         "excluded": {
           "unsupported_structure": 7980,
           "no_source": 6,
@@ -45,7 +45,7 @@
     126,
     252
   ],
-  "modelSourceSha256": "929dbafe672e978795b10d3e6bc98c971b2f1a31283123aeef336d41e1eb3295",
+  "modelSourceSha256": "8b08d246c8ceca1cafe013483bd7d4f63e282e40d5edb9b70e8a14c13276e64a",
   "minimumSessions": 504,
   "directorySha256": "ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2"
 }
