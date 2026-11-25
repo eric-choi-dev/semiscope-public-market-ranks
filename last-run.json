@@ -1,6 +1,6 @@
 {
-  "state": "published",
-  "checkedAt": "2026-11-25T18:01:27.343Z",
+  "state": "retained-price-source-behind",
+  "checkedAt": "2026-11-25T23:47:14.512Z",
   "asOf": "2026-11-24",
   "version": "v10",
   "sha256": "fdbe24b323acd3d72b59cf61354a7b47a361ba27ea24ada24f1495c204c6d4b8",
@@ -41,6 +41,9 @@
     }
   },
   "sourceCommit": "0l01s49k39ib2qgn6kffqbhrk8r6t4it",
+  "observedDirectoryDate": "2026-11-25",
+  "availablePriceDate": "2026-11-24",
+  "availablePriceCommit": "0l01s49k39ib2qgn6kffqbhrk8r6t4it",
   "horizons": [
     126,
     252
