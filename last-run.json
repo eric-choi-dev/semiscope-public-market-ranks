@@ -1,54 +1,51 @@
 {
-  "state": "retained-price-source-behind",
-  "checkedAt": "2026-11-25T00:07:16.026Z",
-  "asOf": "2026-11-23",
-  "version": "v9",
-  "sha256": "a144940800aabe04fbb8c9f3f9309418931520bcbe8ebf3619ece97fe822eab2",
+  "state": "published",
+  "checkedAt": "2026-11-25T18:01:27.343Z",
+  "asOf": "2026-11-24",
+  "version": "v10",
+  "sha256": "fdbe24b323acd3d72b59cf61354a7b47a361ba27ea24ada24f1495c204c6d4b8",
   "buildVersion": "rank-market-7.0",
   "modelVersion": "long-entry-index-5.0",
   "coverage": {
-    "listed": 13277,
-    "eligible": 5297,
+    "listed": 13274,
+    "eligible": 5298,
     "byHorizon": {
       "126": {
-        "scored": 3858,
-        "atLeast80": 155,
+        "scored": 3856,
+        "atLeast80": 167,
         "excluded": {
-          "unsupported_structure": 7980,
-          "no_source": 6,
-          "not_current": 41,
-          "short_history": 800,
+          "unsupported_structure": 7976,
+          "no_source": 8,
+          "not_current": 59,
+          "short_history": 786,
           "invalid_history": 0,
-          "uncertain_action": 480,
-          "halted": 112,
+          "uncertain_action": 481,
+          "halted": 108,
           "inactive_or_discontinuous": 0
         }
       },
       "252": {
-        "scored": 3858,
-        "atLeast80": 155,
+        "scored": 3856,
+        "atLeast80": 167,
         "excluded": {
-          "unsupported_structure": 7980,
-          "no_source": 6,
-          "not_current": 41,
-          "short_history": 800,
+          "unsupported_structure": 7976,
+          "no_source": 8,
+          "not_current": 59,
+          "short_history": 786,
           "invalid_history": 0,
-          "uncertain_action": 480,
-          "halted": 112,
+          "uncertain_action": 481,
+          "halted": 108,
           "inactive_or_discontinuous": 0
         }
       }
     }
   },
-  "sourceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
-  "observedDirectoryDate": "2026-11-24",
-  "availablePriceDate": "2026-11-23",
-  "availablePriceCommit": "njs8j85h7atjqje4ldfu4c4lillpka3t",
+  "sourceCommit": "0l01s49k39ib2qgn6kffqbhrk8r6t4it",
   "horizons": [
     126,
     252
   ],
   "modelSourceSha256": "061daf1f0688a66086c564fe4a88a0cbc3042bfea96ed3dba113b47e00672c05",
   "minimumSessions": 504,
-  "directorySha256": "ed59ae0c13a1e81863ade4eab2a1b244722e762b303af5acfc8a3f6fc4f5eba2"
+  "directorySha256": "7bb88b054dc7a3a55e5689ba38cd5518056f35506cbde71da06be4baaf9d5ce5"
 }
