@@ -1,6 +1,6 @@
 {
-  "state": "current",
-  "checkedAt": "2026-11-26T23:59:26.175Z",
+  "state": "retained-price-source-behind",
+  "checkedAt": "2026-11-27T17:30:16.282Z",
   "asOf": "2026-11-25",
   "version": "v11",
   "sha256": "578353cf0fff4f6c61af1d4170d5607a12e6f1649a68b905cfc3e697e3d764b2",
@@ -41,6 +41,9 @@
     }
   },
   "sourceCommit": "qf4ucseoil06ff5tuor58q90k1adr2q1",
+  "observedDirectoryDate": "2026-11-27",
+  "availablePriceDate": "2026-11-25",
+  "availablePriceCommit": "qf4ucseoil06ff5tuor58q90k1adr2q1",
   "horizons": [
     126,
     252
