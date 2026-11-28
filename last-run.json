@@ -1,54 +1,51 @@
 {
-  "state": "retained-price-source-behind",
-  "checkedAt": "2026-11-27T23:44:38.159Z",
-  "asOf": "2026-11-25",
-  "version": "v11",
-  "sha256": "578353cf0fff4f6c61af1d4170d5607a12e6f1649a68b905cfc3e697e3d764b2",
+  "state": "published",
+  "checkedAt": "2026-11-28T16:16:06.761Z",
+  "asOf": "2026-11-27",
+  "version": "v12",
+  "sha256": "34eb6775450092ecfaabeb8b8cdd4329e4d626d46a8a4c3c7a9c2a54cae6fade",
   "buildVersion": "rank-market-7.0",
   "modelVersion": "long-entry-index-5.0",
   "coverage": {
-    "listed": 13274,
-    "eligible": 5297,
+    "listed": 13271,
+    "eligible": 5293,
     "byHorizon": {
       "126": {
-        "scored": 3859,
-        "atLeast80": 147,
+        "scored": 3854,
+        "atLeast80": 113,
         "excluded": {
-          "unsupported_structure": 7977,
+          "unsupported_structure": 7978,
           "no_source": 10,
-          "not_current": 64,
-          "short_history": 786,
+          "not_current": 82,
+          "short_history": 772,
           "invalid_history": 0,
-          "uncertain_action": 479,
-          "halted": 99,
+          "uncertain_action": 477,
+          "halted": 98,
           "inactive_or_discontinuous": 0
         }
       },
       "252": {
-        "scored": 3859,
-        "atLeast80": 147,
+        "scored": 3854,
+        "atLeast80": 113,
         "excluded": {
-          "unsupported_structure": 7977,
+          "unsupported_structure": 7978,
           "no_source": 10,
-          "not_current": 64,
-          "short_history": 786,
+          "not_current": 82,
+          "short_history": 772,
           "invalid_history": 0,
-          "uncertain_action": 479,
-          "halted": 99,
+          "uncertain_action": 477,
+          "halted": 98,
           "inactive_or_discontinuous": 0
         }
       }
     }
   },
-  "sourceCommit": "qf4ucseoil06ff5tuor58q90k1adr2q1",
-  "observedDirectoryDate": "2026-11-27",
-  "availablePriceDate": "2026-11-25",
-  "availablePriceCommit": "qf4ucseoil06ff5tuor58q90k1adr2q1",
+  "sourceCommit": "l5fsch0qd975m16dtl285tfbvidomgjt",
   "horizons": [
     126,
     252
   ],
   "modelSourceSha256": "061daf1f0688a66086c564fe4a88a0cbc3042bfea96ed3dba113b47e00672c05",
   "minimumSessions": 504,
-  "directorySha256": "5af265fc7012616916e5e86737105474a81ef6086b6c8a834d7cf059eb3b7fab"
+  "directorySha256": "d4b6735b680ccc1d08902f22b7af5b48afbd78996fba43725db4e7ed336abbeb"
 }
